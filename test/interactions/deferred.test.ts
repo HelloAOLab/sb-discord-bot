@@ -79,13 +79,53 @@ describe("deferred replies", () => {
   });
 
   it("logs instead of throwing when Discord rejects the edit, without leaking the token", async () => {
-    mockFetch({ discordStatus: 404 });
+    const { discordCalls } = mockFetch({ discordStatus: 500 });
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await expect(completeDeferredReply(interaction, async () => ({ content: "hi" }))).resolves.toBeUndefined();
 
+    expect(discordCalls).toHaveLength(1); // only "not found" is retried
     expect(log).toHaveBeenCalled();
     expect(String(log.mock.calls[0]?.[1])).not.toContain(interaction.token);
+  });
+
+  // On Workers the edit can reach Discord before Discord has registered the deferred response.
+  it("retries the edit once, after a pause, if Discord doesn't know the message yet", async () => {
+    vi.useFakeTimers();
+    try {
+      const { discordCalls } = mockFetch({ discordStatus: 404 });
+      vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const done = completeDeferredReply(interaction, async () => ({ content: "hi" }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(discordCalls).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      await done;
+
+      expect(discordCalls.map((c) => c.method)).toEqual(["PATCH", "PATCH"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("succeeds when the retried edit goes through", async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+        new Response(null, { status: ++attempts === 1 ? 404 : 204 }),
+      );
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const done = completeDeferredReply(interaction, async () => ({ content: "hi" }));
+      await vi.advanceTimersByTimeAsync(1000);
+      await done;
+
+      expect(attempts).toBe(2);
+      expect(log).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("can make the 'thinking' message private", () => {

@@ -1,0 +1,101 @@
+# Deploys main to Cloudflare Workers: runs CI, applies D1 migrations, deploys the Worker,
+# registers the slash commands with Discord, then smoke-tests the live endpoint.
+#
+# Needs these repository secrets (Settings → Secrets and variables → Actions):
+#   CLOUDFLARE_API_TOKEN   Cloudflare API token with Workers Scripts: Edit and D1: Edit
+#   CLOUDFLARE_ACCOUNT_ID  Cloudflare account ID
+#   DISCORD_TOKEN          Bot token (Developer Portal → Bot), for registering commands
+#   DISCORD_CLIENT_ID      Application ID (Developer Portal → General Information)
+# The Worker's own DISCORD_PUBLIC_KEY is a Cloudflare secret, set once with
+# `pnpm wrangler secret put DISCORD_PUBLIC_KEY`; deploys keep it.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # lets you redeploy main by hand from the Actions tab
+
+permissions:
+  contents: read
+
+concurrency:
+  # One deploy at a time, in order; never cancel one halfway through.
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  check:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Deploy to Cloudflare
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check secrets are set
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          DISCORD_CLIENT_ID: ${{ secrets.DISCORD_CLIENT_ID }}
+        run: |
+          missing=0
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID DISCORD_TOKEN DISCORD_CLIENT_ID; do
+            if [ -z "${!name}" ]; then echo "::error::Secret $name is not set"; missing=1; fi
+          done
+          exit $missing
+
+      # Before the code that needs them goes live. Already-applied migrations are skipped.
+      - name: Apply D1 migrations
+        run: pnpm db:migrate:remote
+
+      - name: Deploy Worker
+        id: deploy
+        run: |
+          set -o pipefail # fail the step if the deploy fails, not just tee
+          pnpm deploy-worker | tee deploy.log
+          url=$(grep -oE 'https://[^ ]+\.workers\.dev' deploy.log | head -n 1)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      # Replaces Discord's command list with commandList. Unchanged commands stay as they are.
+      - name: Register slash commands
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          DISCORD_CLIENT_ID: ${{ secrets.DISCORD_CLIENT_ID }}
+        run: pnpm deploy-commands
+
+      # An unsigned request must be rejected with 401. A 500 means the Worker is misconfigured,
+      # most likely the DISCORD_PUBLIC_KEY secret is missing, so Discord would get errors.
+      - name: Smoke test
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          if [ -z "$URL" ]; then
+            echo "::warning::Couldn't find the Worker's URL in the deploy output; skipping the smoke test."
+            exit 0
+          fi
+          health=$(curl -s -o /dev/null -w '%{http_code}' --retry 3 --retry-all-errors "$URL/health")
+          unsigned=$(curl -s -o /dev/null -w '%{http_code}' -X POST --data '{}' "$URL/interactions")
+          echo "GET /health -> $health, unsigned POST /interactions -> $unsigned"
+          if [ "$health" != "200" ]; then echo "::error::/health returned $health"; exit 1; fi
+          if [ "$unsigned" = "500" ]; then
+            echo "::error::/interactions returned 500. Is DISCORD_PUBLIC_KEY set? Run: pnpm wrangler secret put DISCORD_PUBLIC_KEY"
+            exit 1
+          fi
+          if [ "$unsigned" != "401" ]; then echo "::error::Unsigned request returned $unsigned, expected 401"; exit 1; fi

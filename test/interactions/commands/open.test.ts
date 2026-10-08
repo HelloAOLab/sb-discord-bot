@@ -89,19 +89,15 @@ describe("/open", () => {
 
   describe("when a server admin turned Seed Bible link buttons off", () => {
     it("still shows the picker, with the shortcut as a text link instead of a button", async () => {
-      setSeedBibleLinksEnabled("300000000000000001", false);
-      try {
-        const message = await picker({});
-        expect(message.components).toHaveLength(1); // just the book menu
-        expect(message.components[0].components[0].custom_id).toBe("open-picker:book::::0:0");
-        expect(message.content).toContain("-# Or open Seed Bible now: <https://seedbible.org/?source=discord_bot>");
-      } finally {
-        setSeedBibleLinksEnabled("300000000000000001", true);
-      }
+      await setSeedBibleLinksEnabled("300000000000000001", false);
+      const message = await picker({});
+      expect(message.components).toHaveLength(1); // just the book menu
+      expect(message.components[0].components[0].custom_id).toBe("open-picker:book::::0:0");
+      expect(message.content).toContain("-# Or open Seed Bible now: <https://seedbible.org/?source=discord_bot>");
     });
 
     it("keeps the button in other servers", async () => {
-      setSeedBibleLinksEnabled("300000000000000999", false);
+      await setSeedBibleLinksEnabled("300000000000000999", false);
       const message = await picker({});
       expect(message.components.at(-1).components[0]).toMatchObject({ label: "Open Seed Bible →" });
     });

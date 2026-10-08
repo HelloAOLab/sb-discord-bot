@@ -91,7 +91,7 @@ const spanishBooks: ApiTranslationBook[] = [
 ];
 
 /** Books per translation ID. Any other listed translation gets the English books. */
-export const booksByTranslation: Record<string, ApiTranslationBook[]> = {
+const booksByTranslation: Record<string, ApiTranslationBook[]> = {
   eng_kja: [...englishBooks, { ...book("TOB", 67, "Tobit", 14), isApocryphal: true }],
   spa_r09: spanishBooks,
   spa_rvg: spanishBooks,
@@ -119,17 +119,15 @@ export interface FetchCall {
 }
 
 /**
- * Replaces global fetch: Bible API requests get fixture data, Discord API requests succeed with
- * 204 and are recorded in `discordCalls`, and anything starting with `passThrough` (the local
- * test server) uses the real fetch. Undone after each test by `restoreMocks`.
+ * Replaces global fetch: Bible API requests get fixture data, and Discord API requests succeed
+ * with 204 (or `discordStatus`) and are recorded in `discordCalls`. Undone after each test by
+ * `restoreMocks`.
  */
-export function mockFetch(options: { passThrough?: string; discordStatus?: number } = {}) {
-  const realFetch = globalThis.fetch;
+export function mockFetch(options: { discordStatus?: number } = {}) {
   const discordCalls: FetchCall[] = [];
 
   const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input);
-    if (options.passThrough && url.startsWith(options.passThrough)) return realFetch(input, init);
     if (url.startsWith("https://bible.helloao.org/")) return bibleApiResponse(url);
     if (url.startsWith("https://discord.com/api/")) {
       discordCalls.push({

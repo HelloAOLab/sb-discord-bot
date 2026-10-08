@@ -1,0 +1,49 @@
+# Checks every pull request and branch push: type-check, tests, and that the Worker bundles.
+# The deploy workflow reuses this (workflow_call) before deploying main.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main] # main is checked by deploy.yml, which calls this workflow
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push to the same branch or PR makes an older run pointless.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  check:
+    name: Type-check, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      # Installs the pnpm version pinned in package.json ("packageManager").
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Type-check
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      # wrangler deploy --dry-run: bundles the Worker without uploading; fails on code that
+      # can't run on Workers. Needs no Cloudflare credentials.
+      - name: Build Worker bundle
+        run: pnpm build

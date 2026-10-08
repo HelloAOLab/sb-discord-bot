@@ -1,37 +1,33 @@
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { config } from "../utils/config.js";
+// The app's only persistent storage: a Cloudflare D1 database (SQLite), bound to the Worker as
+// `DB` in wrangler.jsonc. Its tables are created by the SQL files in migrations/.
+//
+// Only the small part of D1's API we use is described here, so code doesn't depend on
+// Cloudflare's type package and tests can supply an in-memory stand-in (test/helpers/database.ts).
 
-// The app's only persistent storage: a SQLite file (config.DATABASE_PATH) opened with Node's
-// built-in driver. Everything else the app knows comes from Discord or the Bible API per request.
-// Calls are synchronous, which is fine for the handful of tiny reads and writes we do.
-
-let db: DatabaseSync | undefined;
-
-/** Opens the database on first use, creating its folder and tables if needed. */
-export function database(): DatabaseSync {
-  if (db) return db;
-
-  const path = config.DATABASE_PATH;
-  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-  db = new DatabaseSync(path);
-
-  // One row per server and setting, so new settings need no schema change.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS guild_settings (
-      guild_id   TEXT NOT NULL,
-      name       TEXT NOT NULL,
-      value      TEXT NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (guild_id, name)
-    )
-  `);
-  return db;
+export interface SqlStatement {
+  bind(...values: unknown[]): SqlStatement;
+  /** The first row, or null if there are none. */
+  first<T = Record<string, unknown>>(): Promise<T | null>;
+  all<T = Record<string, unknown>>(): Promise<{ results: T[] }>;
+  run(): Promise<unknown>;
 }
 
-/** Closes the database (on shutdown). The next database() call reopens it. */
-export function closeDatabase(): void {
-  db?.close();
-  db = undefined;
+export interface SqlDatabase {
+  prepare(query: string): SqlStatement;
+}
+
+let current: SqlDatabase | undefined;
+
+/**
+ * Sets the database for this Worker instance. The Worker calls it at the start of each request
+ * with its D1 binding (the same object for every request), so the rest of the code can just
+ * call database().
+ */
+export function useDatabase(db: SqlDatabase): void {
+  current = db;
+}
+
+export function database(): SqlDatabase {
+  if (!current) throw new Error("No database: useDatabase() must be called first.");
+  return current;
 }

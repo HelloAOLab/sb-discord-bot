@@ -1,5 +1,7 @@
 node_modules/
 dist/
 .env
-data/
+.secrets
 *.log
+.dev.vars
+.wrangler/

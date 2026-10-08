@@ -4,31 +4,33 @@ import { database } from "./database.js";
 
 const SEED_BIBLE_LINKS = "seed_bible_links";
 
-function getSetting(guildId: string, name: string): string | undefined {
-  const row = database()
+async function getSetting(guildId: string, name: string): Promise<string | undefined> {
+  const row = await database()
     .prepare("SELECT value FROM guild_settings WHERE guild_id = ? AND name = ?")
-    .get(guildId, name) as { value: string } | undefined;
+    .bind(guildId, name)
+    .first<{ value: string }>();
   return row?.value;
 }
 
-function setSetting(guildId: string, name: string, value: string): void {
-  database()
+async function setSetting(guildId: string, name: string, value: string): Promise<void> {
+  await database()
     .prepare(`
       INSERT INTO guild_settings (guild_id, name, value) VALUES (?, ?, ?)
       ON CONFLICT (guild_id, name) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
     `)
-    .run(guildId, name, value);
+    .bind(guildId, name, value)
+    .run();
 }
 
 /**
- * Whether replies in this server may include "Open in Seed Bible" links. On unless an admin
- * turned it off. Always on outside servers (DMs), where there's no one to turn it off.
+ * Whether Seed Bible links in this server are shown as buttons (true) or written out as text
+ * (false). On unless an admin turned it off. Always on outside servers (DMs).
  */
-export function seedBibleLinksEnabled(guildId: string | undefined): boolean {
+export async function seedBibleLinksEnabled(guildId: string | undefined): Promise<boolean> {
   if (guildId === undefined) return true;
-  return getSetting(guildId, SEED_BIBLE_LINKS) !== "off";
+  return (await getSetting(guildId, SEED_BIBLE_LINKS)) !== "off";
 }
 
-export function setSeedBibleLinksEnabled(guildId: string, enabled: boolean): void {
-  setSetting(guildId, SEED_BIBLE_LINKS, enabled ? "on" : "off");
+export async function setSeedBibleLinksEnabled(guildId: string, enabled: boolean): Promise<void> {
+  await setSetting(guildId, SEED_BIBLE_LINKS, enabled ? "on" : "off");
 }

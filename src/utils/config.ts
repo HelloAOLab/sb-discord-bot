@@ -1,23 +1,41 @@
-import "dotenv/config";
 import { z } from "zod";
+import type { SqlDatabase } from "../storage/database.js";
 
-const envSchema = z.object({
-  DISCORD_TOKEN: z.string().min(1, "DISCORD_TOKEN is required"),
-  DISCORD_CLIENT_ID: z.string().min(1, "DISCORD_CLIENT_ID is required"),
-  DISCORD_PUBLIC_KEY: z.string().min(1, "DISCORD_PUBLIC_KEY is required"),
-  PORT: z.coerce.number().int().positive().default(3000),
-  // SQLite file for per-server settings. ":memory:" keeps them only until the process exits.
-  DATABASE_PATH: z.string().min(1).default("data/sb-discord-app.sqlite"),
-});
+// What the Worker receives from Cloudflare with every request: variables and secrets
+// (`wrangler secret put`, or .env when running `wrangler dev`) and bindings such as the D1 database
+// (wrangler.jsonc). Read them through parseEnv(), never through process.env.
+// The command-registration script (scripts/deploy-commands.ts) runs in Node and reads .env instead.
 
-const parsed = envSchema.safeParse(process.env);
-
-if (!parsed.success) {
-  console.error("Invalid environment variables:");
-  for (const issue of parsed.error.issues) {
-    console.error(`  - ${issue.path.join(".")}: ${issue.message}`);
-  }
-  process.exit(1);
+export interface Env {
+  /** Discord Developer Portal → General Information → Public Key. Used to verify requests. */
+  DISCORD_PUBLIC_KEY: string;
+  /** The D1 database (binding "DB" in wrangler.jsonc). */
+  DB: SqlDatabase;
 }
 
-export const config = parsed.data;
+const envSchema = z.object({
+  DISCORD_PUBLIC_KEY: z
+    .string({ error: "DISCORD_PUBLIC_KEY is missing. Set it with `wrangler secret put DISCORD_PUBLIC_KEY`." })
+    .regex(/^[0-9a-f]{64}$/i, "DISCORD_PUBLIC_KEY must be the 64-character hex Public Key from the Developer Portal."),
+  DB: z.custom<SqlDatabase>(
+    (value) => typeof (value as SqlDatabase | undefined)?.prepare === "function",
+    "DB is missing. Check the d1_databases binding in wrangler.jsonc.",
+  ),
+});
+
+const checked = new WeakSet<object>();
+
+/**
+ * Checks the Worker's environment and returns it typed. Throws an Error listing every problem.
+ * Cloudflare passes the same env object to every request, so it's only checked once.
+ */
+export function parseEnv(env: unknown): Env {
+  if (typeof env === "object" && env !== null && checked.has(env)) return env as Env;
+
+  const parsed = envSchema.safeParse(env);
+  if (!parsed.success) {
+    throw new Error(`Invalid Worker environment:\n${parsed.error.issues.map((i) => `  - ${i.message}`).join("\n")}`);
+  }
+  checked.add(env as object);
+  return env as Env;
+}

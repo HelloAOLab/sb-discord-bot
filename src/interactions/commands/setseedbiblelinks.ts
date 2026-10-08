@@ -35,7 +35,7 @@ export const setSeedBibleLinks: Command = {
     ],
   },
 
-  execute(interaction) {
+  async execute(interaction) {
     const guildId = interaction.guild_id;
     if (guildId === undefined) {
       throw new UserFacingError("This setting is per server, so use this command in a server.");
@@ -51,14 +51,14 @@ export const setSeedBibleLinks: Command = {
 
     let content: string;
     if (state === "on" || state === "off") {
-      setSeedBibleLinksEnabled(guildId, state === "on");
+      await setSeedBibleLinksEnabled(guildId, state === "on");
       console.log(`[settings] Seed Bible links turned ${state} in guild ${guildId}`);
       content =
         state === "off"
           ? "✅ Seed Bible link buttons are now **off** for this server. Links will be posted as plain text instead."
           : "✅ Seed Bible link buttons are now **on** for this server.";
     } else {
-      content = seedBibleLinksEnabled(guildId)
+      content = (await seedBibleLinksEnabled(guildId))
         ? "Seed Bible link buttons are **on** for this server. Use `/setseedbiblelinks state: off` to post plain-text links instead."
         : "Seed Bible link buttons are **off** for this server, so links are posted as plain text. Use `/setseedbiblelinks state: on` to show buttons.";
     }
