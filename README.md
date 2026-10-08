@@ -11,14 +11,30 @@ A TypeScript Discord app for [seedbible.org](https://seedbible.org) that receive
 
 ### Deploy to Cloudflare
 
+Pushing to `main` deploys automatically (see [CI/CD](#cicd)). To deploy by hand:
+
 ```sh
 pnpm wrangler login                              # once
 pnpm db:migrate:remote                           # create the tables in the D1 database
-pnpm wrangler secret put DISCORD_PUBLIC_KEY      # paste the Public Key when asked
-pnpm deploy                                      # prints the Worker's URL, e.g. https://sb-discord-app.<you>.workers.dev
+pnpm wrangler secret put DISCORD_PUBLIC_KEY      # once: paste the Public Key when asked
+pnpm deploy-worker                               # prints the Worker's URL, e.g. https://sb-discord-app.<you>.workers.dev
 ```
 
 Then in the portal under **General Information → Interactions Endpoint URL**, enter `https://<worker-url>/interactions` and save. Discord sends a signed test request; saving only succeeds if the Worker verifies it.
+
+### CI/CD
+
+GitHub Actions runs two workflows:
+
+- **CI** (`.github/workflows/ci.yml`): on every pull request and branch push, type-checks, runs the tests, and checks the Worker bundles.
+- **Deploy** (`.github/workflows/deploy.yml`): on every push to `main`, runs CI, then applies D1 migrations, deploys the Worker, registers the slash commands, and smoke-tests the live Worker. You can also start it from the **Actions** tab.
+
+One-time setup:
+
+1. Set the Worker's public key once (if not done): `pnpm wrangler secret put DISCORD_PUBLIC_KEY`.
+2. Create a Cloudflare API token (dashboard → **My Profile → API Tokens → Create Token**, "Edit Cloudflare Workers" template, plus **Account → D1 → Edit**).
+3. In GitHub, **Settings → Secrets and variables → Actions**, add `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` (dashboard → Workers & Pages, right sidebar), `DISCORD_TOKEN` and `DISCORD_CLIENT_ID`.
+4. Optional: in **Settings → Branches**, require the "Type-check, test, build" check before merging into `main`.
 
 ### Run locally
 
@@ -34,7 +50,7 @@ Discord can't reach `localhost`; to try local changes from Discord, expose it wi
 | Script                   | Description                                                     |
 | ------------------------ | --------------------------------------------------------------- |
 | `pnpm dev`               | Run the Worker locally with `wrangler dev`                      |
-| `pnpm deploy`            | Deploy the Worker to Cloudflare                                 |
+| `pnpm deploy-worker`     | Deploy the Worker to Cloudflare                                 |
 | `pnpm build`             | Bundle the Worker into `dist/` without deploying                |
 | `pnpm typecheck`         | Type-check without emitting                                     |
 | `pnpm test`              | Run the tests                                                   |
@@ -45,6 +61,7 @@ Discord can't reach `localhost`; to try local changes from Discord, expose it wi
 ## Structure
 
 ```
+.github/workflows/           # CI (checks) and Deploy (main → Cloudflare)
 wrangler.jsonc               # Worker config and D1 binding
 migrations/                  # D1 schema
 src/

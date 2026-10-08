@@ -4,7 +4,7 @@
   "description": "Discord app for seedbible.org, running on Cloudflare Workers",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy-worker": "wrangler deploy",
     "build": "wrangler deploy --dry-run --outdir dist",
     "typecheck": "tsc --noEmit",
     "deploy-commands": "tsx src/scripts/deploy-commands.ts",

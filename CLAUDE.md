@@ -87,7 +87,7 @@ pnpm typecheck           # type-check without emitting — run after every chang
 pnpm test                # run the Vitest suite once
 pnpm test:watch          # re-run tests on change
 pnpm build               # bundle the Worker into dist/ without deploying (checks it builds for Workers)
-pnpm deploy              # deploy the Worker to Cloudflare (wrangler deploy)
+pnpm deploy-worker       # deploy the Worker to Cloudflare (wrangler deploy); not `pnpm deploy`, a pnpm built-in
 pnpm deploy-commands     # register slash commands with Discord (global); runs locally, reads .env
 pnpm db:migrate:local    # apply migrations/ to the local D1 copy used by `pnpm dev`
 pnpm db:migrate:remote   # apply migrations/ to the real D1 database — do this before deploying code that needs them
@@ -96,6 +96,12 @@ pnpm db:migrate:remote   # apply migrations/ to the real D1 database — do this
 `wrangler` is a dev dependency, so run it as `pnpm wrangler …` (e.g. `pnpm wrangler tail` to stream the deployed Worker's logs).
 
 There is no linter configured. Verify changes with `pnpm test` and `pnpm typecheck`.
+
+## CI/CD (GitHub Actions)
+
+- **`.github/workflows/ci.yml`** runs on every pull request and every push except to `main`: `pnpm install --frozen-lockfile`, `typecheck`, `test`, `build`. Keep `pnpm-lock.yaml` in sync with `package.json` (commit both), or the install step fails.
+- **`.github/workflows/deploy.yml`** runs on every push to `main` (and by hand from the Actions tab): it calls CI, then applies D1 migrations (`db:migrate:remote`), deploys the Worker, registers slash commands (`deploy-commands`), and smoke-tests the live Worker (`/health` must be 200; an unsigned `POST /interactions` must be 401, where 500 means `DISCORD_PUBLIC_KEY` is missing). Merging to `main` is how changes go live; manual `pnpm deploy-worker` is only needed outside that flow.
+- Deploy secrets (repository secrets, Settings → Secrets and variables → Actions): `CLOUDFLARE_API_TOKEN` (Workers Scripts: Edit, D1: Edit), `CLOUDFLARE_ACCOUNT_ID`, `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`. The Worker's `DISCORD_PUBLIC_KEY` is a Cloudflare secret set once with `pnpm wrangler secret put`, not a GitHub secret.
 
 ## Architecture
 
