@@ -12,13 +12,17 @@ import { UserFacingError } from "../utils/errors.js";
 
 // Discord drops an interaction that isn't answered within 3 seconds. For slower work, a command
 // answers right away with a "deferred" response (Discord shows "<app> is thinking…"), then edits
-// that message once the work is done. The edit must happen *after* the deferred response reaches
-// Discord, so the router runs the work only after sending the response (see runDeferredWork).
+// that message once the work is done. server/app.ts starts the work (runDeferredWork) as it sends
+// the response and keeps the Worker alive until it finishes (waitUntil). The edit must reach
+// Discord after the response does, so an edit Discord doesn't recognize yet is retried once.
 
 /** The message that replaces "is thinking…". */
 export type DeferredMessage = RESTPatchAPIWebhookWithTokenMessageJSONBody;
 
 type Interaction = Pick<APIInteraction, "application_id" | "token">;
+
+/** How long to wait before retrying an edit Discord didn't recognize yet. */
+const RETRY_DELAY_MS = 750;
 
 const pendingWork = new WeakMap<APIInteractionResponse, () => Promise<void>>();
 
@@ -125,11 +129,20 @@ async function discordWebhookRequest(
     ? Routes.webhookMessage(interaction.application_id, interaction.token, messageId)
     : Routes.webhook(interaction.application_id, interaction.token);
 
-  const response = await fetch(`${RouteBases.api}${route}`, {
-    method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  const send = () =>
+    fetch(`${RouteBases.api}${route}`, {
+      method,
+      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+
+  let response = await send();
+  // The work can finish before Discord has registered our deferred response (cached data makes it
+  // nearly instant), and Discord then doesn't know the original message yet. Try once more.
+  if (response.status === 404 && messageId) {
+    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+    response = await send();
+  }
   if (!response.ok) {
     throw new Error(`Discord ${method} ${route.replace(interaction.token, "<token>")} failed: ${response.status} ${await response.text()}`);
   }

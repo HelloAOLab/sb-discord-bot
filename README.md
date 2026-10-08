@@ -1,50 +1,61 @@
 # sb-discord-app
 
-A TypeScript Discord app that receives slash commands over HTTP ([interactions endpoint](https://discord.com/developers/docs/interactions/overview#configuring-an-interactions-endpoint-url)) using [Express](https://expressjs.com) and [discord-interactions](https://github.com/discord/discord-interactions-js).
+A TypeScript Discord app for [seedbible.org](https://seedbible.org) that receives slash commands over HTTP ([interactions endpoint](https://discord.com/developers/docs/interactions/overview#configuring-an-interactions-endpoint-url)). It runs on [Cloudflare Workers](https://developers.cloudflare.com/workers/) with [Hono](https://hono.dev), stores per-server settings in [D1](https://developers.cloudflare.com/d1/), and gets Bible data from the [Free Use Bible API](https://bible.helloao.org).
 
 ## Setup
 
-1. Create an application at the [Discord Developer Portal](https://discord.com/developers/applications).
-2. Copy `.env.example` to `.env` and fill in:
-   - `DISCORD_CLIENT_ID` and `DISCORD_PUBLIC_KEY` — from **General Information**
-   - `DISCORD_TOKEN` — from **Bot** (used only to register commands)
-3. Install the app to your server from the **Installation** page (scope: `applications.commands`).
-4. Install dependencies, register commands, and start the server:
+1. Create an application at the [Discord Developer Portal](https://discord.com/developers/applications), and install it to your server from the **Installation** page (scope: `applications.commands`).
+2. Install dependencies: `pnpm install`.
+3. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` (**Bot**), and `DISCORD_CLIENT_ID` and `DISCORD_PUBLIC_KEY` (**General Information**). `.env` stays on your machine: `pnpm deploy-commands` and `pnpm dev` read it; the deployed Worker gets its key from a Cloudflare secret instead (below).
+4. Register the slash commands: `pnpm deploy-commands`.
+
+### Deploy to Cloudflare
 
 ```sh
-pnpm install
-pnpm deploy-commands
-pnpm dev
+pnpm wrangler login                              # once
+pnpm db:migrate:remote                           # create the tables in the D1 database
+pnpm wrangler secret put DISCORD_PUBLIC_KEY      # paste the Public Key when asked
+pnpm deploy                                      # prints the Worker's URL, e.g. https://sb-discord-app.<you>.workers.dev
 ```
 
-5. Expose the server publicly (Discord can't reach `localhost`), e.g. with `ngrok http 3000` or `cloudflared tunnel --url http://localhost:3000`.
-6. In the portal under **General Information → Interactions Endpoint URL**, enter `https://<your-public-url>/interactions` and save. Discord sends a signed test request; saving only succeeds if the server is running and verifies it.
+Then in the portal under **General Information → Interactions Endpoint URL**, enter `https://<worker-url>/interactions` and save. Discord sends a signed test request; saving only succeeds if the Worker verifies it.
+
+### Run locally
+
+```sh
+pnpm db:migrate:local    # once, and after adding a migration
+pnpm dev                 # http://localhost:8787
+```
+
+Discord can't reach `localhost`; to try local changes from Discord, expose it with `cloudflared tunnel --url http://localhost:8787` and point the Interactions Endpoint URL at the tunnel.
 
 ## Scripts
 
-| Script                 | Description                                  |
-| ---------------------- | -------------------------------------------- |
-| `pnpm dev`             | Run with auto-restart via `nodemon`          |
-| `pnpm build`           | Compile TypeScript to `dist/`                |
-| `pnpm start`           | Run the compiled build                       |
-| `pnpm typecheck`       | Type-check without emitting                  |
-| `pnpm deploy-commands` | Register slash commands with Discord         |
+| Script                   | Description                                                     |
+| ------------------------ | --------------------------------------------------------------- |
+| `pnpm dev`               | Run the Worker locally with `wrangler dev`                      |
+| `pnpm deploy`            | Deploy the Worker to Cloudflare                                 |
+| `pnpm build`             | Bundle the Worker into `dist/` without deploying                |
+| `pnpm typecheck`         | Type-check without emitting                                     |
+| `pnpm test`              | Run the tests                                                   |
+| `pnpm deploy-commands`   | Register slash commands with Discord                            |
+| `pnpm db:migrate:local`  | Apply `migrations/` to the local D1 copy                        |
+| `pnpm db:migrate:remote` | Apply `migrations/` to the real D1 database                     |
 
 ## Structure
 
 ```
+wrangler.jsonc               # Worker config and D1 binding
+migrations/                  # D1 schema
 src/
-  index.ts                   # entry point: starts the Express server
-  utils/
-    config.ts                # env loading and validation (zod)
-  interactions/
-    router.ts                # POST /interactions — verifies signatures, dispatches commands
-    commands/                # slash commands (register new ones in index.ts)
-  server/
-    app.ts                   # Express app
-    routes/health.ts         # GET /health
-  scripts/
-    deploy-commands.ts       # registers slash commands via the REST API
+  worker.ts                  # Workers entry point
+  server/app.ts              # Hono app: verifies Discord's signature, routes interactions
+  interactions/              # router, slash commands, buttons and menus
+  bible/                     # Free Use Bible API helpers
+  seedbible/                 # seedbible.org links and interface languages
+  storage/                   # D1 access and per-server settings
+  utils/                     # config, errors, text helpers
+  scripts/deploy-commands.ts # registers slash commands via the REST API (runs locally)
 ```
 
 ## Adding a command
@@ -53,6 +64,4 @@ src/
 2. Add it to `commandList` in `src/interactions/commands/index.ts`.
 3. Run `pnpm deploy-commands`. Commands are registered globally and can take up to an hour to appear.
 
-Discord requires a response within **3 seconds**. For slower work, respond with
-`InteractionResponseType.DeferredChannelMessageWithSource`, then edit the reply later via
-`PATCH /webhooks/{application_id}/{interaction_token}/messages/@original`.
+Discord requires a response within **3 seconds**. For slower work, return `deferReply(interaction, work)` from `src/interactions/deferred.ts`; see CLAUDE.md for details.

@@ -60,7 +60,7 @@ export const open: Command = {
       interaction,
       async () => {
         const id = translation === undefined ? undefined : (await findTranslation(bibleApi, translation)).id;
-        const buttons = seedBibleLinksEnabled(interaction.guild_id);
+        const buttons = await seedBibleLinksEnabled(interaction.guild_id);
         return pickerMessage({ translation: id, lang }, await loadBooks(bibleApi, id), { buttons });
       },
       { ephemeral: true },

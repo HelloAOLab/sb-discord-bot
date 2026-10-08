@@ -1,6 +1,6 @@
 // Discord sends back a component's custom_id when it's clicked. We encode it as
 // "<component id>:<arg>:<arg>..." so the router can find the handler by id and pass it the
-// args (e.g. "ping-again:3"). Discord caps custom_id at 100 characters.
+// args (e.g. "open-picker:book:BSB"). Discord caps custom_id at 100 characters.
 
 const SEPARATOR = ":";
 const MAX_LENGTH = 100;

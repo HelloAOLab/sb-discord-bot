@@ -131,11 +131,10 @@ export const openPicker: Component = {
       chapterPage: toPage(chapterPage),
     };
     const page = pageFromValue(value);
-    // Checked on every click, so a change by a server admin applies to pickers already open.
-    const buttons = seedBibleLinksEnabled(interaction.guild_id);
-
     // Loading book names can be slow on a cold cache, so update the message once they arrive.
     return deferUpdate(interaction, async () => {
+      // Checked on every click, so a change by a server admin applies to pickers already open.
+      const buttons = await seedBibleLinksEnabled(interaction.guild_id);
       const books = await loadBooks(bibleApi, state.translation);
 
       if (step === "book") {

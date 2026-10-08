@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ButtonStyle, ComponentType, InteractionResponseType, MessageFlags } from "discord-api-types/v10";
 import { FreeUseBibleApi } from "free-use-bible-api";
 import { openPicker, pickerMessage, type PickerState } from "../../../src/interactions/components/open-picker.js";
@@ -195,7 +195,6 @@ describe("open-picker", () => {
 
   describe("when a server admin turned Seed Bible link buttons off", () => {
     beforeEach(() => setSeedBibleLinksEnabled("300000000000000001", false));
-    afterEach(() => setSeedBibleLinksEnabled("300000000000000001", true));
 
     it("posts the link as text instead of a button, with no preview card", async () => {
       const [post] = await choose(id("chapter", "spa_r09", "en", "JHN"), "3");

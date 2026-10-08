@@ -1,12 +1,10 @@
-export const SEED_BIBLE_URL = "https://seedbible.org/";
+const SEED_BIBLE_URL = "https://seedbible.org/";
 
 /** What a seedbible.org link opens. Every field is optional; the site fills in its own defaults. */
 export interface SeedBibleTarget {
   /** USFM book code, e.g. "JHN". */
   book?: string;
   chapter?: number;
-  /** "16", "16-18" or "1,3,5-7". */
-  verses?: string;
   /** Bible API translation ID, exactly as the API spells it, e.g. "BSB" or "spa_r09". */
   translation?: string;
   /** Interface language code from UI_LANGUAGES, e.g. "es". Separate from the translation. */
@@ -23,7 +21,6 @@ export function seedBibleUrl(target: SeedBibleTarget = {}): string {
   const params: [string, string | number | undefined][] = [
     ["book", target.book],
     ["chapter", target.chapter],
-    ["verse", target.verses],
     ["translation", target.translation],
     ["lang", target.lang],
     ["source", "discord_bot"],

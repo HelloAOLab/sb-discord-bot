@@ -19,7 +19,9 @@ This applies to all prose responses — summaries, explanations, and trade-off d
 
 **sb-discord-app** is a Discord app that helps users generate useful links and content for [seedbible.org](https://seedbible.org) through slash commands.
 
-It is an **HTTP interactions app**, not a gateway bot: Discord sends each slash command as a signed `POST` request to our Express server, and we reply in the HTTP response. There is no persistent connection to Discord, no `discord.js`, and no access to gateway events (messages, reactions, member joins). Don't add `discord.js` or gateway intents unless explicitly asked.
+It is an **HTTP interactions app**, not a gateway bot: Discord sends each slash command as a signed `POST` request, and we reply in the HTTP response. There is no persistent connection to Discord, no `discord.js`, and no access to gateway events (messages, reactions, member joins). Don't add `discord.js` or gateway intents unless explicitly asked.
+
+It runs on **Cloudflare Workers** (configured in `wrangler.jsonc`): Cloudflare calls the Worker for each request, with no long-running server. That means no Node-only APIs in `src/` (no `fs`, `process`, `node:*` imports) except in `src/scripts/`, which runs on your machine; settings and secrets come from the Worker's `env`, not `.env`; and per-server data lives in a **D1** database (Cloudflare's hosted SQLite).
 
 ## Bible Data: Free Use Bible API
 
@@ -67,7 +69,8 @@ The SDK uses the global `fetch` and **throws on any non-2xx response**. A 404 al
 
 - **Shared client and helpers:** use `bibleApi` from `src/bible/api.ts` rather than creating a new client, so every command shares one cache. `findTranslation()` turns user text ("bsb", "kjv", "R09") into the exact translation and throws a `UserFacingError` with a friendly message if there's none; `searchTranslations()` ranks translations for autocomplete. `loadBooks()` gets a translation's books (plus English names), and `findBook()` looks one up by USFM code.
 - **3-second limit:** API calls are usually fast, but not guaranteed. Commands that fetch Bible data should return `deferReply(interaction, work)` (see Important Constraints).
-- **Caching:** the SDK caches responses in memory for the life of the process (except complete translations), and the API sends `Cache-Control: max-age=86400`. Bible text never changes, so don't add another caching layer unless profiling shows a need. `warmBibleCache()` preloads the translation list and English book names at startup.
+- **Caching:** the SDK caches responses in memory for as long as the Worker instance lives (Cloudflare reuses instances but discards them at any time), except complete translations, and the API sends `Cache-Control: max-age=86400`. Bible text never changes, so don't add another caching layer unless profiling shows a need.
+- **CPU time:** Workers limit CPU time per request (10 ms on the free plan). Parsing the full translation list (~900 KB, used by `findTranslation()` and translation autocomplete) is the heaviest thing the app does; watch for "exceeded CPU" errors in `wrangler tail` if the Worker is on the free plan.
 - **Too many translations for a dropdown:** there are 1,250+ translations, and Discord limits a slash-command option to 25 fixed choices. Use an **autocomplete** option instead (see `/open`'s `translation` option and `searchTranslations()`).
 - **Discord's message limit:** messages are capped at 2,000 characters, and a full chapter often exceeds that. Plan for verse ranges, truncation with a link to seedbible.org, or paging with buttons (see `components/`).
 - **Tests** must mock `fetch` and never call the real API (see the `interaction-tests` skill).
@@ -79,64 +82,67 @@ This project requires **pnpm v10+**. Do not use npm or yarn.
 ## Common Commands
 
 ```sh
-pnpm dev               # run with auto-restart (nodemon + tsx, watches src/ and .env)
-pnpm typecheck         # type-check without emitting — run after every change
-pnpm build             # compile to dist/
-pnpm start             # run the compiled build
-pnpm deploy-commands   # register slash commands with Discord (global)
-pnpm test              # run the Vitest suite once
-pnpm test:watch        # re-run tests on change
+pnpm dev                 # run the Worker locally (wrangler dev, http://localhost:8787), with a local D1 copy
+pnpm typecheck           # type-check without emitting — run after every change
+pnpm test                # run the Vitest suite once
+pnpm test:watch          # re-run tests on change
+pnpm build               # bundle the Worker into dist/ without deploying (checks it builds for Workers)
+pnpm deploy              # deploy the Worker to Cloudflare (wrangler deploy)
+pnpm deploy-commands     # register slash commands with Discord (global); runs locally, reads .env
+pnpm db:migrate:local    # apply migrations/ to the local D1 copy used by `pnpm dev`
+pnpm db:migrate:remote   # apply migrations/ to the real D1 database — do this before deploying code that needs them
 ```
+
+`wrangler` is a dev dependency, so run it as `pnpm wrangler …` (e.g. `pnpm wrangler tail` to stream the deployed Worker's logs).
 
 There is no linter configured. Verify changes with `pnpm test` and `pnpm typecheck`.
 
 ## Architecture
 
 ```
+wrangler.jsonc                 # Worker config: entry point, D1 binding (DB → database "db1")
+migrations/                    # D1 schema, applied with pnpm db:migrate:local / db:migrate:remote
 src/
-  index.ts                     # entry: starts Express, handles SIGINT/SIGTERM
+  worker.ts                    # Cloudflare Workers entry: exports the Hono app
   interactions/
-    router.ts                  # POST /interactions: signature check → find command or component → return its response
+    router.ts                  # handleInteraction(): find the command or component → return its response
     deferred.ts                # deferReply() / deferUpdate(): answer now, edit the message when slow work finishes
     open-link.ts               # resolveOpenLink() / openMessage(): the "Open John 3 in Seed Bible" link
     permissions.ts             # hasPermission(): check the user's server permissions in code
     commands/
       types.ts                 # `Command` interface: { data, execute, autocomplete? }
       index.ts                 # `commandList` — every command must be registered here
-      ping.ts, echo.ts         # example commands
       open.ts                  # /open [translation] [lang]: shows the open-picker component
       setseedbiblelinks.ts     # /setseedbiblelinks [on|off]: per-server switch for Seed Bible links (Manage Server)
     components/                # buttons and select menus
       types.ts                 # `Component` interface: { id, execute(interaction, args) }
       index.ts                 # `componentList` — every component must be registered here
       custom-id.ts             # customId() / parseCustomId(): "<id>:<arg>:<arg>" encoding
-      ping-again.ts            # example: the button on /ping's reply
       open-picker.ts           # /open's private picker: book → chapter (paged with "Next →"), then posts the link
       pages.ts                 # pagedOptions(): split long lists into menu pages with "← Previous" / "Next →"
   bible/
-    api.ts                     # shared Free Use Bible API client, warmBibleCache()
+    api.ts                     # shared Free Use Bible API client
     translations.ts            # findTranslation() / searchTranslations(): user text → exact translation ID
     books.ts                   # loadBooks() / findBook(): a translation's books, looked up by USFM code
   seedbible/
     links.ts                   # seedBibleUrl(): builds seedbible.org links (always adds source=discord_bot)
     ui-languages.ts            # the 77 interface languages seedbible.org supports (`lang` URL parameter)
   storage/
-    database.ts                # the SQLite database (node:sqlite) at DATABASE_PATH; tables created on first use
+    database.ts                # useDatabase() / database(): the D1 database for the current request
     guild-settings.ts          # per-server settings (seedBibleLinksEnabled / setSeedBibleLinksEnabled)
   utils/
-    config.ts                  # loads .env and validates it with zod; import `config`, never read process.env directly
+    config.ts                  # `Env` (the Worker's secrets and bindings) and parseEnv(), which validates it with zod
     errors.ts                  # UserFacingError: an error whose message is shown to the user privately
     text.ts                    # truncate() for Discord's label limits
   server/
-    app.ts                     # Express app setup and middleware order
-    routes/health.ts           # GET /health
+    app.ts                     # Hono app: POST /interactions (signature check → router → waitUntil), GET /health
   scripts/
-    deploy-commands.ts         # PUTs `commandList` definitions to Discord's REST API
+    deploy-commands.ts         # PUTs `commandList` definitions to Discord's REST API (runs in Node, reads .env)
 ```
 
 ### Adding a slash command
 
-1. Create `src/interactions/commands/<name>.ts` exporting a `Command`. Follow `echo.ts` as the pattern for options.
+1. Create `src/interactions/commands/<name>.ts` exporting a `Command`. Follow `setseedbiblelinks.ts` as the pattern for options with fixed choices, and `open.ts` for autocomplete and deferred replies.
    - `data` is the raw Discord command JSON (`RESTPostAPIChatInputApplicationCommandsJSONBody`).
    - `execute` returns an `APIInteractionResponse` object; it does not call `reply()`.
 2. Add it to `commandList` in `src/interactions/commands/index.ts`.
@@ -150,7 +156,7 @@ For an option with too many values for 25 fixed choices, set `autocomplete: true
 
 Components are the interactive parts of a message. A command (or another component) sends them; when a user clicks one, Discord POSTs an interaction carrying the component's `custom_id`, and the router finds the handler by the part before the first `:`.
 
-1. Create `src/interactions/components/<name>.ts` exporting a `Component` with a unique `id`, plus a function that builds its action row (see `ping-again.ts`).
+1. Create `src/interactions/components/<name>.ts` exporting a `Component` with a unique `id`, plus a function that builds the message or action rows it appears in (see `open-picker.ts` and its `pickerMessage()`).
 2. Always build `custom_id` with `customId(id, ...args)`. It enforces Discord's 100-character limit and rejects `:` inside args. Store small state the handler needs (counts, IDs) in the args, because the app keeps no memory between requests.
 3. Add it to `componentList` in `src/interactions/components/index.ts`. Components don't need `pnpm deploy-commands`.
 4. Respond with `InteractionResponseType.UpdateMessage` to edit the message the component is on, or `ChannelMessageWithSource` to post a new one. If the handler needs the Bible API, return `deferUpdate(interaction, work)` instead; `work` returns the new message, and can post extra messages with `sendFollowUp()`.
@@ -161,7 +167,9 @@ Buttons on old messages keep working after a deploy only if their `id` and arg f
 
 ## Per-server settings and storage
 
-Per-server settings live in a SQLite file (`DATABASE_PATH`, default `data/sb-discord-app.sqlite`, git-ignored), opened with Node's built-in `node:sqlite` (Node 22.13+). It's the app's only persistent state. Add a setting as a pair of functions in `storage/guild-settings.ts`; the `guild_settings` table stores one row per server and setting name, so no schema change is needed. The folder must survive restarts and deploys, or settings reset to their defaults. Tests use `:memory:` (set in `test/setup.ts`), so each test file starts with an empty database.
+Per-server settings live in the **D1 database** bound as `DB` in `wrangler.jsonc` (database `db1`). It's the app's only persistent state. `server/app.ts` passes the binding to `useDatabase()` on each request; code reads it with `database()`, using D1's API (`prepare(sql).bind(...).first() / .all() / .run()`, all async). Add a setting as a pair of functions in `storage/guild-settings.ts`; the `guild_settings` table stores one row per server and setting name, so no schema change is needed.
+
+**Schema changes** go in a new numbered file in `migrations/` (never edit an applied one). Apply it with `pnpm db:migrate:local` for `pnpm dev`, and with `pnpm db:migrate:remote` **before** deploying code that relies on it. Tests build their database from the same files, so a broken migration fails the tests.
 
 **Seed Bible link buttons can be turned off per server** (`/setseedbiblelinks off`). Everything still works; links are just written out as text instead of shown as buttons. Any reply with a seedbible.org link must respect it: check `seedBibleLinksEnabled(interaction.guild_id)` when building the reply (on every click for components, so the change applies to messages already open) and, when it's false, use no link buttons. `openMessage(link, { button: false })` and `pickerMessage(state, books, { buttons: false })` do this; for other text, write the address with `plainLink(url)`, which wraps it in `<…>` so Discord doesn't add a preview card.
 
@@ -169,45 +177,48 @@ Per-server settings live in a SQLite file (`DATABASE_PATH`, default `data/sb-dis
 
 ## seedbible.org links
 
-Build links with `seedBibleUrl()` (`src/seedbible/links.ts`), e.g. `https://seedbible.org/?book=JHN&chapter=3&translation=BSB&source=discord_bot`. The site reads `book` (USFM code), `chapter`, `verse` (`16`, `16-18` or `1,3,5-7`), `translation` (Bible API ID, exact casing) and `lang`. `lang` sets the **interface** language and is independent of the translation; the codes it accepts are listed in `src/seedbible/ui-languages.ts`, copied from the site's locale files.
+Build links with `seedBibleUrl()` (`src/seedbible/links.ts`), e.g. `https://seedbible.org/?book=JHN&chapter=3&translation=BSB&source=discord_bot`. It supports `book` (USFM code), `chapter`, `translation` (Bible API ID, exact casing) and `lang`. The site also accepts `verse` (`16`, `16-18` or `1,3,5-7`); add it to `SeedBibleTarget` when a command needs it. `lang` sets the **interface** language and is independent of the translation; the codes it accepts are listed in `src/seedbible/ui-languages.ts`, copied from the site's locale files.
 
-Use types and enums from `discord-api-types/v10` (e.g. `InteractionResponseType`, `ApplicationCommandOptionType`, `MessageFlags`). Use `discord-interactions` only for `verifyKeyMiddleware`.
+Use types and enums from `discord-api-types/v10` (e.g. `InteractionResponseType`, `ApplicationCommandOptionType`, `MessageFlags`). Use `discord-interactions` only for `verifyKey`.
 
 ## Important Constraints
 
-- **Middleware order matters.** `/interactions` is mounted in `server/app.ts` _before_ `express.json()` because `verifyKeyMiddleware` needs the unparsed request body to check Discord's signature. Never move `express.json()` above it or add body-parsing middleware to that route — every request would then fail verification.
-- **3-second response limit.** Discord drops the interaction if `execute` doesn't respond within 3 seconds. For slow work (external fetches, etc.), return `deferReply(interaction, async () => message)` from `src/interactions/deferred.ts`. The router sends the deferred response first and only then runs the work, which edits the reply via `PATCH /webhooks/{application_id}/{interaction_token}/messages/@original`. If the work throws, the public "thinking…" message is deleted and the error is sent as a private follow-up.
+- **Verify the raw body.** `server/app.ts` checks Discord's signature with `verifyKey()` against the request body exactly as received (`c.req.text()`), before parsing it. Never verify a parsed and re-serialized body, or add anything that consumes the body first — every request would then fail verification, and Discord disables an endpoint that accepts unsigned requests.
+- **3-second response limit.** Discord drops the interaction if `execute` doesn't respond within 3 seconds. For slow work (external fetches, etc.), return `deferReply(interaction, async () => message)` from `src/interactions/deferred.ts`. `server/app.ts` sends the deferred response and keeps the Worker alive for the work with `ctx.waitUntil()` (without it, Cloudflare stops the Worker as soon as it responds). The work edits the reply via `PATCH /webhooks/{application_id}/{interaction_token}/messages/@original`, retrying once if Discord hasn't registered the response yet. If the work throws, the "thinking…" message is deleted and the error is sent as a private follow-up.
 - **User text in replies.** When echoing user input, set `allowed_mentions: { parse: [] }` so users can't trigger `@everyone` or role pings through the bot.
-- **PING is handled for us.** `verifyKeyMiddleware` answers Discord's PING (endpoint check) itself; the router only receives real interactions.
+- **PING** (Discord's endpoint check) is answered by `handleInteraction()` with PONG, after the signature check.
 
 ## Code Conventions
 
-- **ES modules with NodeNext resolution.** Relative imports must include the `.js` extension, even from `.ts` files (`import { config } from "./config.js"`).
+- **ES modules with NodeNext resolution.** Relative imports must include the `.js` extension, even from `.ts` files (`import { truncate } from "../utils/text.js"`).
 - **TypeScript 7** with `strict` on. Keep type-check clean.
 - **Logging** uses `console` with a bracketed area prefix: `[server]`, `[interactions]`.
 
 ## Environment
 
-Variables are defined and validated in `src/utils/config.ts`; `.env.example` lists them. When adding a variable, update both.
+There are two separate sets of settings, because two things run in different places:
 
-| Variable             | Source (Discord Developer Portal) | Used for                              |
-| -------------------- | --------------------------------- | ------------------------------------- |
-| `DISCORD_CLIENT_ID`  | General Information → Application ID | Registering commands               |
-| `DISCORD_PUBLIC_KEY` | General Information → Public Key  | Verifying incoming request signatures |
-| `DISCORD_TOKEN`      | Bot → Token                       | Registering commands (REST auth only) |
-| `PORT`               | —                                 | Express port (default 3000)           |
-| `DATABASE_PATH`      | —                                 | SQLite file for per-server settings (default `data/sb-discord-app.sqlite`) |
+| Variable             | Where it's set | Source (Discord Developer Portal) | Used for |
+| -------------------- | -------------- | --------------------------------- | -------- |
+| `DISCORD_PUBLIC_KEY` | Deployed Worker: `pnpm wrangler secret put DISCORD_PUBLIC_KEY`; `pnpm dev`: `.env` | General Information → Public Key | Verifying incoming request signatures |
+| `DB`                 | Worker binding in `wrangler.jsonc` | — | The D1 database |
+| `DISCORD_TOKEN`      | `.env` (your machine only) | Bot → Token | `pnpm deploy-commands` (REST auth) |
+| `DISCORD_CLIENT_ID`  | `.env` (your machine only) | General Information → Application ID | `pnpm deploy-commands` |
+
+All local values live in one git-ignored `.env` file (`.env.example` lists them). `wrangler dev` loads it into the local Worker's `env` — but only when no `.dev.vars` file exists, so don't create one. The deployed Worker never reads `.env`; it gets `DISCORD_PUBLIC_KEY` from the Cloudflare secret. The bot token never goes to Cloudflare: the Worker doesn't need it.
+
+The Worker's variables are declared and validated in `src/utils/config.ts` (`Env`, `parseEnv()`); when adding one, update it, `.env.example`, and this table, and set it on Cloudflare with `pnpm wrangler secret put`.
 
 Never print, log, or commit `.env` values.
 
 ## Local Development
 
-Discord can't reach `localhost`. To test end-to-end, run `pnpm dev`, expose port 3000 with a tunnel (`ngrok http 3000` or `cloudflared tunnel --url http://localhost:3000`), and set **Interactions Endpoint URL** in the Developer Portal to `https://<tunnel-url>/interactions`. The server must be running when saving, since Discord sends a verification request.
+`pnpm dev` runs the Worker at `http://localhost:8787` in Wrangler's local runtime, with a local copy of D1 (in `.wrangler/`, set up with `pnpm db:migrate:local`) and `DISCORD_PUBLIC_KEY` from `.env`. Discord can't reach `localhost`, so to try it from Discord either expose it with a tunnel (`cloudflared tunnel --url http://localhost:8787`) or deploy, then set **Interactions Endpoint URL** in the Developer Portal to `https://<url>/interactions`. The Worker must be running when you save, since Discord sends a verification request.
 
-The dev machine runs Windows. Avoid calling `process.exit()` while servers or sockets are still closing; it can crash Node with a libuv assertion. Set `process.exitCode` and let the process exit on its own.
+The dev machine runs Windows. In scripts (`src/scripts/`), avoid calling `process.exit()` while sockets are still closing; it can crash Node with a libuv assertion. Set `process.exitCode` and let the process exit on its own.
 
 ### Tests (`test/`)
 
-Tests use **Vitest** and live in `test/`, mirroring the `src/` path of the file under test. They never contact Discord: `test/setup.ts` sets fake env vars with a throwaway signing key, so tests can sign requests the way Discord does. Follow the `interaction-tests` skill (`.claude/skills/interaction-tests/SKILL.md`) when writing or changing tests, and add tests with every new or changed slash command.
+Tests use **Vitest**, run in Node, and live in `test/`, mirroring the `src/` path of the file under test. They never contact Discord or Cloudflare: `test/helpers/server.ts` calls the Hono app directly with a test `env` (a throwaway signing key, so tests sign requests the way Discord does) and a stand-in `ctx` that records `waitUntil()` work, and `test/setup.ts` gives every test a fresh in-memory database built from `migrations/` (`test/helpers/database.ts`, which mimics D1's API with Node's SQLite). Follow the `interaction-tests` skill (`.claude/skills/interaction-tests/SKILL.md`) when writing or changing tests, and add tests with every new or changed slash command.
 
-- `tsconfig.json` type-checks `src/` and `test/` (no output); `tsconfig.build.json` compiles only `src/` to `dist/`, so tests never ship.
+- `tsconfig.json` type-checks `src/` and `test/` (no output). Wrangler bundles the Worker from `src/worker.ts`, so tests never ship.

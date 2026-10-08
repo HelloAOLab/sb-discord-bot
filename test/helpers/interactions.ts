@@ -12,6 +12,9 @@ import {
   type APIMessageComponentInteraction,
 } from "discord-api-types/v10";
 
+/** The application (bot) ID in test payloads. */
+const TEST_APPLICATION_ID = "123456789012345678";
+
 const TEST_USER = {
   id: "100000000000000001",
   username: "tester",
@@ -31,7 +34,7 @@ export function chatInputInteraction(
 ): APIChatInputApplicationCommandInteraction {
   return {
     id: "200000000000000001",
-    application_id: process.env.DISCORD_CLIENT_ID!,
+    application_id: TEST_APPLICATION_ID,
     type: InteractionType.ApplicationCommand,
     token: "test-interaction-token",
     version: 1,
@@ -55,7 +58,7 @@ export function chatInputInteraction(
 
 /**
  * Builds a button-click payload like the one Discord POSTs when a user clicks a component.
- * `customId` is the clicked component's custom_id, e.g. customId("ping-again", 1).
+ * `customId` is the clicked component's custom_id, e.g. customId("open-picker", "book").
  */
 export function buttonInteraction(
   customId: string,

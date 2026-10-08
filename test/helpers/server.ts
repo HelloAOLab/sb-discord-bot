@@ -1,23 +1,44 @@
-import type { AddressInfo } from "node:net";
-import type { Server } from "node:http";
-import { createServer } from "../../src/server/app.js";
-import { signRequest } from "./keys.js";
+import { createApp } from "../../src/server/app.js";
+import { database } from "../../src/storage/database.js";
+import type { Env } from "../../src/utils/config.js";
+import { signRequest, testPublicKeyHex } from "./keys.js";
 
-export interface TestServer {
-  url: string;
-  close: () => Promise<void>;
+// Calls the real Hono app the way Cloudflare does — app.fetch(request, env, ctx) — with no
+// server or network involved.
+
+const app = createApp();
+
+/** The Worker's env in tests: the test signing key and the current test database. */
+export function testEnv(): Env {
+  return { DISCORD_PUBLIC_KEY: testPublicKeyHex, DB: database() };
 }
 
-/** Starts the real Express app on a random free port. Call `close()` in afterAll. */
-export async function startTestServer(): Promise<TestServer> {
-  const server: Server = await new Promise((resolve) => {
-    const s = createServer().listen(0, () => resolve(s));
-  });
-  const { port } = server.address() as AddressInfo;
+/** A stand-in for Cloudflare's ExecutionContext that remembers what was passed to waitUntil(). */
+function testExecutionContext() {
+  const pending: Promise<unknown>[] = [];
   return {
-    url: `http://127.0.0.1:${port}`,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    pending,
+    waitUntil: (promise: Promise<unknown>) => void pending.push(promise),
+    passThroughOnException: () => {},
+    props: {},
   };
+}
+
+/**
+ * Sends a request to the app. `background` resolves once everything the app passed to
+ * waitUntil() (e.g. a deferred reply's follow-up) has finished.
+ */
+export async function request(path: string, init: RequestInit = {}, env: Partial<Env> = testEnv()) {
+  const ctx = testExecutionContext();
+  const res = await app.request(path, init, env, ctx);
+  const text = await res.text();
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = undefined;
+  }
+  return { status: res.status, body: json as any, text, background: Promise.all(ctx.pending).then(() => {}) };
 }
 
 export interface PostOptions {
@@ -27,13 +48,12 @@ export interface PostOptions {
   unsigned?: boolean;
   /** Send (and sign) this exact string instead of JSON.stringify(payload). */
   rawBody?: string;
+  /** Override the Worker env (e.g. to test a missing secret). */
+  env?: Partial<Env>;
 }
 
-/**
- * POSTs a payload to /interactions signed exactly as Discord would sign it.
- * Returns the status and parsed JSON body (or raw text if the body isn't JSON).
- */
-export async function postInteraction(baseUrl: string, payload: unknown, options: PostOptions = {}) {
+/** POSTs a payload to /interactions signed exactly as Discord would sign it. */
+export async function postInteraction(payload: unknown, options: PostOptions = {}) {
   const body = options.rawBody ?? JSON.stringify(payload);
   const timestamp = String(Math.floor(Date.now() / 1000));
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -45,13 +65,5 @@ export async function postInteraction(baseUrl: string, payload: unknown, options
     headers["X-Signature-Timestamp"] = timestamp;
   }
 
-  const res = await fetch(`${baseUrl}/interactions`, { method: "POST", headers, body });
-  const text = await res.text();
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = undefined;
-  }
-  return { status: res.status, body: json as any, text };
+  return request("/interactions", { method: "POST", headers, body }, options.env);
 }

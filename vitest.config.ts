@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
-    // Sets fake env vars (with a real test signing key) before src/config.ts is imported.
+    // Gives every test a fresh in-memory database built from migrations/.
     setupFiles: ["test/setup.ts"],
     restoreMocks: true,
   },

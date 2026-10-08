@@ -1,7 +1,7 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 
 // A throwaway Ed25519 key pair standing in for Discord's. The app is given the public key
-// (via DISCORD_PUBLIC_KEY in test/setup.ts); tests sign requests with the private key.
+// (as DISCORD_PUBLIC_KEY in testEnv(), test/helpers/server.ts); tests sign requests with the private key.
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 
 /** Raw 32-byte public key as hex — the same format the Developer Portal shows. */
