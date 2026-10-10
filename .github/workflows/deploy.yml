@@ -6,8 +6,8 @@
 #   CLOUDFLARE_ACCOUNT_ID  Cloudflare account ID
 #   DISCORD_TOKEN          Bot token (Developer Portal → Bot), for registering commands
 #   DISCORD_CLIENT_ID      Application ID (Developer Portal → General Information)
-# The Worker's own DISCORD_PUBLIC_KEY is a Cloudflare secret, set once with
-# `pnpm wrangler secret put DISCORD_PUBLIC_KEY`; deploys keep it.
+# The Worker's own DISCORD_PUBLIC_KEY and DISCORD_TOKEN (for inline verses) are Cloudflare secrets,
+# set once with `pnpm wrangler secret put <name>`; deploys keep them.
 name: Deploy
 
 on:

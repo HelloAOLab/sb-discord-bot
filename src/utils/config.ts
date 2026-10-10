@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { GatewayNamespace } from "../gateway/control.js";
 import type { SqlDatabase } from "../storage/database.js";
 
 // What the Worker receives from Cloudflare with every request: variables and secrets
@@ -11,6 +12,13 @@ export interface Env {
   DISCORD_PUBLIC_KEY: string;
   /** The D1 database (binding "DB" in wrangler.jsonc). */
   DB: SqlDatabase;
+  /**
+   * Discord Developer Portal → Bot → Token. Only the Gateway connection (inline verses) uses it, to
+   * read messages and reply; interactions don't. Without it, everything but inline verses works.
+   */
+  DISCORD_TOKEN?: string;
+  /** The Gateway Durable Object (binding "GATEWAY" in wrangler.jsonc). */
+  GATEWAY?: GatewayNamespace;
 }
 
 const envSchema = z.object({
@@ -21,6 +29,13 @@ const envSchema = z.object({
     (value) => typeof (value as SqlDatabase | undefined)?.prepare === "function",
     "DB is missing. Check the d1_databases binding in wrangler.jsonc.",
   ),
+  DISCORD_TOKEN: z.string().min(1, "DISCORD_TOKEN is empty.").optional(),
+  GATEWAY: z
+    .custom<GatewayNamespace>(
+      (value) => typeof (value as GatewayNamespace | undefined)?.idFromName === "function",
+      "GATEWAY isn't a Durable Object binding. Check durable_objects in wrangler.jsonc.",
+    )
+    .optional(),
 });
 
 const checked = new WeakSet<object>();

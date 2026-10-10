@@ -13,6 +13,16 @@
     }
   ],
 
+  // The Gateway Durable Object holds the one connection that receives messages, for inline verses
+  // (src/gateway/). "migrations" here are Durable Object class changes, not D1 migrations.
+  "durable_objects": {
+    "bindings": [{ "name": "GATEWAY", "class_name": "Gateway" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Gateway"] }],
+
+  // Wakes the Gateway object every 5 minutes in case its own alarm stopped (src/worker.ts).
+  "triggers": { "crons": ["*/5 * * * *"] },
+
   // Logs (console.log/warn/error) appear in the dashboard and in `wrangler tail`.
   "observability": { "enabled": true }
 }

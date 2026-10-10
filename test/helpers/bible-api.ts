@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { ApiTranslation, ApiTranslationBook, BookId } from "free-use-bible-api";
+import type { ApiSimpleTranslationBookChapter, ApiTranslation, ApiTranslationBook, BookId } from "free-use-bible-api";
 
 // A tiny stand-in for the Free Use Bible API (https://bible.helloao.org), shaped like the real
 // responses but with only the translations and books the tests need.
@@ -25,6 +25,7 @@ function translation(id: string, shortName: string, englishName: string, languag
 
 export const translations: ApiTranslation[] = [
   translation("BSB", "BSB", "Berean Standard Bible", "eng", "English"),
+  translation("AAB", "AAB", "Accessible Ancients Bible", "eng", "English"),
   translation("ENGWEBP", "WEB", "World English Bible", "eng", "English"),
   translation("eng_kjv", "KJAV", "King James Version", "eng", "English"),
   translation("eng_kja", "KJVA", "King James Version + Apocrypha", "eng", "English"),
@@ -97,6 +98,40 @@ const booksByTranslation: Record<string, ApiTranslationBook[]> = {
   spa_rvg: spanishBooks,
 };
 
+/** Real (BSB) text for the verses tests quote, in every translation; every other verse is "<BOOK> <chapter>:<verse> text." */
+const VERSE_TEXT: Record<string, string> = {
+  "JHN 3:16": "For God so loved the world that He gave His one and only Son, that everyone who believes in Him shall not perish but have eternal life.",
+  "JHN 3:17": "For God did not send His Son into the world to condemn the world, but to save the world through Him.",
+  "PSA 23:1": "The LORD is my shepherd;\nI shall not want.",
+};
+
+/** Verses per chapter: 6 in Psalm 23, 176 long ones in Psalm 119 (several pages), otherwise 36. */
+function verseCount(book: string, chapter: number): number {
+  if (book === "PSA" && chapter === 23) return 6;
+  if (book === "PSA" && chapter === 119) return 176;
+  return 36;
+}
+
+/** A chapter in the API's simple format, like getSimpleTranslationBookChapter() returns. */
+export function simpleChapter(translationId: string, bookId: string, chapter: number): ApiSimpleTranslationBookChapter {
+  const found = translations.find((t) => t.id === translationId)!;
+  const book = (booksByTranslation[translationId] ?? englishBooks).find((b) => b.id === bookId)!;
+  const filler = (n: number) => (bookId === "PSA" && chapter === 119 ? `${"Your word is a lamp to my feet. ".repeat(3)}(${n})` : `${bookId} ${chapter}:${n} text.`);
+  const verses = Array.from({ length: verseCount(bookId, chapter) }, (_, i) => ({
+    type: "verse" as const,
+    number: i + 1,
+    text: VERSE_TEXT[`${bookId} ${chapter}:${i + 1}`] ?? filler(i + 1),
+    footnotes: [],
+  }));
+  const subtitle = bookId === "PSA" ? [{ type: "hebrew_subtitle" as const, text: "A Psalm of David.", footnotes: [] }] : [];
+  return {
+    translation: found,
+    book,
+    numberOfVerses: verses.length,
+    chapter: { number: chapter, content: [{ type: "heading", text: "A heading" }, ...subtitle, ...verses], footnotes: [] },
+  } as unknown as ApiSimpleTranslationBookChapter;
+}
+
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
 
 /** Answers a Bible API URL from the fixtures above, or 404 like the real API does for a wrong ID. */
@@ -108,6 +143,17 @@ export function bibleApiResponse(url: string): Response {
   const id = books ? decodeURIComponent(books[1]!) : undefined;
   const found = translations.find((t) => t.id === id);
   if (found) return json({ translation: found, books: booksByTranslation[found.id] ?? englishBooks });
+
+  const chapter = /^\/api\/([^/]+)\/([^/]+)\/(\d+)\.simple\.json$/.exec(path);
+  if (chapter) {
+    const [, translationId = "", bookId = "", number = ""] = chapter.map(decodeURIComponent);
+    const book = translations.some((t) => t.id === translationId)
+      ? (booksByTranslation[translationId] ?? englishBooks).find((b) => b.id === bookId)
+      : undefined;
+    if (book && Number(number) >= 1 && Number(number) <= book.numberOfChapters) {
+      return json(simpleChapter(translationId, bookId, Number(number)));
+    }
+  }
 
   return new Response("Not found", { status: 404 });
 }

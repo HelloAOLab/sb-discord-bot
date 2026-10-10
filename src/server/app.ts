@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { verifyKey } from "discord-interactions";
 import type { APIInteraction } from "discord-api-types/v10";
+import { useGateway } from "../gateway/control.js";
 import { runDeferredWork } from "../interactions/deferred.js";
 import { handleInteraction } from "../interactions/router.js";
 import { useDatabase } from "../storage/database.js";
@@ -19,6 +20,7 @@ export function createApp() {
   app.post("/interactions", async (c) => {
     const env = parseEnv(c.env);
     useDatabase(env.DB);
+    useGateway(env.GATEWAY);
 
     // Discord signs each request; the signature covers the exact bytes it sent, so verify the raw
     // body before parsing it. Discord rejects an endpoint that accepts unsigned requests.
