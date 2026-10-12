@@ -19,7 +19,7 @@ This applies to all prose responses — summaries, explanations, and trade-off d
 
 **sb-discord-app** is a Discord app that helps users generate useful links and content for [seedbible.org](https://seedbible.org) through slash commands.
 
-It is an **HTTP interactions app**, not a gateway bot: Discord sends each slash command as a signed `POST` request, and we reply in the HTTP response. There is no persistent connection to Discord, no `discord.js`, and no access to gateway events (messages, reactions, member joins). Don't add `discord.js` or gateway intents unless explicitly asked.
+It is mainly an **HTTP interactions app**: Discord sends each slash command as a signed `POST` request, and we reply in the HTTP response. The one exception is **inline verses** (replying to "John 3:16" written in chat), which needs to see messages. For that, a Durable Object (`src/gateway/`) holds one Gateway connection, Discord's WebSocket that streams events, with the `GuildMessages` and `MessageContent` intents. It's a small hand-written client, not `discord.js`. Don't add `discord.js` or more intents unless explicitly asked; everything else should stay an interaction.
 
 It runs on **Cloudflare Workers** (configured in `wrangler.jsonc`): Cloudflare calls the Worker for each request, with no long-running server. That means no Node-only APIs in `src/` (no `fs`, `process`, `node:*` imports) except in `src/scripts/`, which runs on your machine; settings and secrets come from the Worker's `env`, not `.env`; and per-server data lives in a **D1** database (Cloudflare's hosted SQLite).
 
@@ -101,15 +101,22 @@ There is no linter configured. Verify changes with `pnpm test` and `pnpm typeche
 
 - **`.github/workflows/ci.yml`** runs on every pull request and every push except to `main`: `pnpm install --frozen-lockfile`, `typecheck`, `test`, `build`. Keep `pnpm-lock.yaml` in sync with `package.json` (commit both), or the install step fails.
 - **`.github/workflows/deploy.yml`** runs on every push to `main` (and by hand from the Actions tab): it calls CI, then applies D1 migrations (`db:migrate:remote`), deploys the Worker, registers slash commands (`deploy-commands`), and smoke-tests the live Worker (`/health` must be 200; an unsigned `POST /interactions` must be 401, where 500 means `DISCORD_PUBLIC_KEY` is missing). Merging to `main` is how changes go live; manual `pnpm deploy-worker` is only needed outside that flow.
-- Deploy secrets (repository secrets, Settings → Secrets and variables → Actions): `CLOUDFLARE_API_TOKEN` (Workers Scripts: Edit, D1: Edit), `CLOUDFLARE_ACCOUNT_ID`, `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`. The Worker's `DISCORD_PUBLIC_KEY` is a Cloudflare secret set once with `pnpm wrangler secret put`, not a GitHub secret.
+- Deploy secrets (repository secrets, Settings → Secrets and variables → Actions): `CLOUDFLARE_API_TOKEN` (Workers Scripts: Edit, D1: Edit), `CLOUDFLARE_ACCOUNT_ID`, `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`. The Worker's `DISCORD_PUBLIC_KEY` and `DISCORD_TOKEN` are Cloudflare secrets set once with `pnpm wrangler secret put`, not GitHub secrets (the GitHub `DISCORD_TOKEN` is only for registering commands).
 
 ## Architecture
 
 ```
-wrangler.jsonc                 # Worker config: entry point, D1 binding (DB → database "db1")
+wrangler.jsonc                 # Worker config: entry point, D1 binding (DB → database "db1"), GATEWAY Durable Object, cron
 migrations/                    # D1 schema, applied with pnpm db:migrate:local / db:migrate:remote
 src/
-  worker.ts                    # Cloudflare Workers entry: exports the Hono app
+  worker.ts                    # Cloudflare Workers entry: the Hono app (fetch), the cron (scheduled), the Gateway class
+  gateway/
+    client.ts                  # GatewayClient: Discord's Gateway protocol (identify, heartbeat, resume, reconnect)
+    durable-object.ts          # Gateway Durable Object: holds the client, runs it on its alarm
+    control.ts                 # useGateway() / wakeGateway(): how the Worker reaches the Durable Object
+  inline/
+    messages.ts                # replyToReferences(): a new message → replies to its Bible references
+    passages.ts                # passageReplies(): one components reply per passage (a box: text cut to fit, Seed Bible button)
   interactions/
     router.ts                  # handleInteraction(): find the command or component → return its response
     deferred.ts                # deferReply() / deferUpdate(): answer now, edit the message when slow work finishes
@@ -120,6 +127,7 @@ src/
       index.ts                 # `commandList` — every command must be registered here
       open.ts                  # /open [translation] [lang]: shows the open-picker component
       setseedbiblelinks.ts     # /setseedbiblelinks [on|off]: per-server switch for Seed Bible links (Manage Server)
+      setinlineverses.ts       # /setinlineverses [on|off]: per-server switch for inline verses (Manage Server)
     components/                # buttons and select menus
       types.ts                 # `Component` interface: { id, execute(interaction, args) }
       index.ts                 # `componentList` — every component must be registered here
@@ -130,6 +138,7 @@ src/
     api.ts                     # shared Free Use Bible API client
     translations.ts            # findTranslation() / searchTranslations(): user text → exact translation ID
     books.ts                   # loadBooks() / findBook(): a translation's books, looked up by USFM code
+    references.ts              # findPassages(): Bible references in chat text (openbibleinfo parser) → book + chapter/verse segments
   seedbible/
     links.ts                   # seedBibleUrl(): builds seedbible.org links (always adds source=discord_bot)
     ui-languages.ts            # the 77 interface languages seedbible.org supports (`lang` URL parameter)
@@ -181,9 +190,28 @@ Per-server settings live in the **D1 database** bound as `DB` in `wrangler.jsonc
 
 **Admin-only commands:** set `default_member_permissions` (hides the command by default) and `contexts: [InteractionContextType.Guild]`, and also check `hasPermission()` in `execute`, because server admins can make a command visible to anyone in Server Settings → Integrations.
 
+## Inline verses and the Gateway connection
+
+When a server turns on `/setinlineverses` (off by default), the bot replies to Bible references in ordinary messages, **one reply per passage** ("gen 1 1 and exo 2 3" gets two, at most 3). Each reply is a **Components V2** message (`MessageFlags.IsComponentsV2`: no `content`, only components): a box (Container) with a heading, the text cut short at a line break to fit Discord's 4,000-character limit, and an "Open in Seed Bible →" link button built with `seedBibleChapterUrl()`. The text is `INLINE_TRANSLATION` (AAB, the Accessible Ancients Bible and Seed Bible's own default) until per-user and per-server translation preferences exist.
+
+`findPassages()` uses the [openbibleinfo Bible Passage Reference Parser](https://github.com/openbibleinfo/Bible-Passage-Reference-Parser) (`bible-passage-reference-parser`), so nearly any way of writing a reference works: "genesis 2 3-4", "Jn 3:16; 4:2", "1 Cor 13". The parser also accepts everyday words as books, so two lists in `references.ts` keep chat from triggering replies: `COMMON_WORDS` (abbreviations like "is", "am", "so", "ex" never count, even before a number, unless written with a dot: "it is 5 pm" isn't Isaiah 5, "Ex. 3:14" is Exodus) and `AMBIGUOUS_ALONE` (full names that are common words or first names, like Job, Mark, John, Acts, Numbers, only count with a chapter). Otherwise a book on its own, written in full, means its first chapter ("genesis" → Genesis 1). Code, links and mentions are skipped; a range over many chapters loads at most 3 of them (in parallel).
+
+How messages arrive:
+
+- **One connection for the whole bot.** The `Gateway` Durable Object (named `"main"`) holds it, and connects only while *some* server has inline verses on (`anyInlineVersesEnabled()`). `/setinlineverses` calls `wakeGateway()`, so turning the first server on connects at once and turning the last one off disconnects.
+- **Everything runs on the object's alarm.** `GatewayClient.tick()` sends heartbeats, notices a dead connection, and reconnects with growing delays. Whether any server has inline verses on is read once and cached until the object is woken (`/setinlineverses` and the cron `*/5 * * * *`, `scheduled()` in `worker.ts`, both call `wakeGateway()`), so heartbeats don't query D1.
+- **Restarts resume.** Every deploy restarts the object. The session ID and how far events have been handled are saved in its storage, so the new copy resumes and Discord replays what it missed. Saved progress never passes a message whose reply is still being sent (so a restart can't lose it), and the last 50 messages answered are remembered (so a replayed one isn't answered twice).
+- **Misconfiguration backs off.** A close that retrying won't fix (wrong token, Message Content intent not enabled) is logged with the fix, and the next try is 15 minutes later, even if inline verses are turned off and on in between. Discord allows only 1,000 new sessions a day per bot.
+- **Replies are posted as the bot** (`POST /channels/{id}/messages` with `DISCORD_TOKEN`), not through an interaction. So the bot must be a member of the server (`bot` scope) with View Channels, Send Messages and Read Message History.
+- **More than ~2,500 servers** would need sharding (several connections). The client doesn't support that yet; Discord closes with 4011 if it's needed.
+
+Testing: `GatewayClient` takes its socket, storage, clock and handlers as options, so `test/gateway/client.test.ts` drives the protocol with `FakeSocket` / `FakeStorage` from `test/helpers/gateway.ts`. Test message handling by calling `replyToReferences(gatewayMessage("John 3:16"), token)` with `mockFetch()`.
+
 ## seedbible.org links
 
-Build links with `seedBibleUrl()` (`src/seedbible/links.ts`), e.g. `https://seedbible.org/?book=JHN&chapter=3&translation=BSB&source=discord_bot`. It supports `book` (USFM code), `chapter`, `translation` (Bible API ID, exact casing) and `lang`. The site also accepts `verse` (`16`, `16-18` or `1,3,5-7`); add it to `SeedBibleTarget` when a command needs it. `lang` sets the **interface** language and is independent of the translation; the codes it accepts are listed in `src/seedbible/ui-languages.ts`, copied from the site's locale files.
+Build links with `seedBibleUrl()` (`src/seedbible/links.ts`), e.g. `https://seedbible.org/?book=JHN&chapter=3&translation=BSB&source=discord_bot`. It supports `book` (USFM code), `chapter`, `translation` (Bible API ID, exact casing) and `lang`. `lang` sets the **interface** language and is independent of the translation; the codes it accepts are listed in `src/seedbible/ui-languages.ts`, copied from the site's locale files.
+
+Inline verses link to the reader instead, with `seedBibleChapterUrl()`: `https://seedbible.org/genesis/2?verse=3-4&source=discord_bot`. It leaves out the language and translation (the full form is `/en/BSB/genesis/2`), so the site redirects to the reader's saved translation, or its defaults. Books are their English names in lowercase with hyphens (`1-corinthians`, `song-of-solomon`), which matches the site for all 66 books; `verse` takes `16`, `16-18` or `1,3,5-7`.
 
 Use types and enums from `discord-api-types/v10` (e.g. `InteractionResponseType`, `ApplicationCommandOptionType`, `MessageFlags`). Use `discord-interactions` only for `verifyKey`.
 
@@ -208,10 +236,13 @@ There are two separate sets of settings, because two things run in different pla
 | -------------------- | -------------- | --------------------------------- | -------- |
 | `DISCORD_PUBLIC_KEY` | Deployed Worker: `pnpm wrangler secret put DISCORD_PUBLIC_KEY`; `pnpm dev`: `.env` | General Information → Public Key | Verifying incoming request signatures |
 | `DB`                 | Worker binding in `wrangler.jsonc` | — | The D1 database |
-| `DISCORD_TOKEN`      | `.env` (your machine only) | Bot → Token | `pnpm deploy-commands` (REST auth) |
+| `GATEWAY`            | Worker binding in `wrangler.jsonc` | — | The Gateway Durable Object (inline verses) |
+| `DISCORD_TOKEN`      | Deployed Worker: `pnpm wrangler secret put DISCORD_TOKEN`; your machine: `.env` | Bot → Token | The Gateway connection and its replies (inline verses); `pnpm deploy-commands` (REST auth). Optional for the Worker: without it, everything but inline verses works |
 | `DISCORD_CLIENT_ID`  | `.env` (your machine only) | General Information → Application ID | `pnpm deploy-commands` |
 
-All local values live in one git-ignored `.env` file (`.env.example` lists them). `wrangler dev` loads it into the local Worker's `env` — but only when no `.dev.vars` file exists, so don't create one. The deployed Worker never reads `.env`; it gets `DISCORD_PUBLIC_KEY` from the Cloudflare secret. The bot token never goes to Cloudflare: the Worker doesn't need it.
+All local values live in one git-ignored `.env` file (`.env.example` lists them). `wrangler dev` loads it into the local Worker's `env` — but only when no `.dev.vars` file exists, so don't create one. The deployed Worker never reads `.env`; it gets `DISCORD_PUBLIC_KEY` and `DISCORD_TOKEN` from Cloudflare secrets. Only the Gateway Durable Object uses the bot token; interactions never need it.
+
+For local development, use a **separate Discord application** (its own values in `.env`, invited only to a test server). If the local Worker and the deployed one share a bot, both receive every message and reply twice.
 
 The Worker's variables are declared and validated in `src/utils/config.ts` (`Env`, `parseEnv()`); when adding one, update it, `.env.example`, and this table, and set it on Cloudflare with `pnpm wrangler secret put`.
 
@@ -219,7 +250,7 @@ Never print, log, or commit `.env` values.
 
 ## Local Development
 
-`pnpm dev` runs the Worker at `http://localhost:8787` in Wrangler's local runtime, with a local copy of D1 (in `.wrangler/`, set up with `pnpm db:migrate:local`) and `DISCORD_PUBLIC_KEY` from `.env`. Discord can't reach `localhost`, so to try it from Discord either expose it with a tunnel (`cloudflared tunnel --url http://localhost:8787`) or deploy, then set **Interactions Endpoint URL** in the Developer Portal to `https://<url>/interactions`. The Worker must be running when you save, since Discord sends a verification request.
+`pnpm dev` runs the Worker at `http://localhost:8787` in Wrangler's local runtime, with a local copy of D1 (in `.wrangler/`, set up with `pnpm db:migrate:local`), the Gateway Durable Object, and the secrets from `.env`. The Gateway connection is outgoing, so inline verses work locally without a tunnel once a test server runs `/setinlineverses state: on`. Discord can't reach `localhost`, so to try it from Discord either expose it with a tunnel (`cloudflared tunnel --url http://localhost:8787`) or deploy, then set **Interactions Endpoint URL** in the Developer Portal to `https://<url>/interactions`. The Worker must be running when you save, since Discord sends a verification request.
 
 The dev machine runs Windows. In scripts (`src/scripts/`), avoid calling `process.exit()` while sockets are still closing; it can crash Node with a libuv assertion. Set `process.exitCode` and let the process exit on its own.
 

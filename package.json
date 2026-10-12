@@ -18,6 +18,7 @@
   "license": "ISC",
   "packageManager": "pnpm@10.17.1",
   "dependencies": {
+    "bible-passage-reference-parser": "^4.0.0",
     "discord-api-types": "^0.38.56",
     "discord-interactions": "^4.4.0",
     "free-use-bible-api": "^0.4.0",
