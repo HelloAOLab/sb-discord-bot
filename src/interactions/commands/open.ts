@@ -1,10 +1,10 @@
 import { ApplicationCommandOptionType } from "discord-api-types/v10";
 import { bibleApi } from "../../bible/api.js";
 import { loadBooks } from "../../bible/books.js";
-import { describeTranslation, findTranslation, searchTranslations } from "../../bible/translations.js";
+import { findTranslation } from "../../bible/translations.js";
 import { UserFacingError } from "../../utils/errors.js";
-import { describeUiLanguage, findUiLanguage, searchUiLanguages } from "../../seedbible/ui-languages.js";
-import { truncate } from "../../utils/text.js";
+import { findUiLanguage } from "../../seedbible/ui-languages.js";
+import { translationChoices, uiLanguageChoices } from "../autocomplete.js";
 import { pickerMessage } from "../components/open-picker.js";
 import { deferReply } from "../deferred.js";
 import { seedBibleLinksEnabled } from "../../storage/guild-settings.js";
@@ -72,22 +72,8 @@ export const open: Command = {
     if (!focused || !("value" in focused)) return [];
     const typed = String(focused.value);
 
-    if (focused.name === "translation") {
-      const { translations } = await bibleApi.getAvailableTranslations();
-      return searchTranslations(translations, typed).map((translation) => ({
-        name: truncate(describeTranslation(translation), 100),
-        value: translation.id,
-      }));
-    }
-
-    if (focused.name === "lang") {
-      const preferred = findUiLanguage(interaction.locale ?? "")?.code;
-      return searchUiLanguages(typed, preferred).map((language) => ({
-        name: truncate(`${describeUiLanguage(language)} · ${language.code}`, 100),
-        value: language.code,
-      }));
-    }
-
+    if (focused.name === "translation") return translationChoices(typed);
+    if (focused.name === "lang") return uiLanguageChoices(typed, interaction.locale);
     return [];
   },
 };

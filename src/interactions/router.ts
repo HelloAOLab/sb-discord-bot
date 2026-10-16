@@ -12,14 +12,16 @@ import { UserFacingError } from "../utils/errors.js";
 import { commands } from "./commands/index.js";
 import { components } from "./components/index.js";
 import { parseCustomId } from "./components/custom-id.js";
+import { modals } from "./modals/index.js";
 
-// Finds the command or component an interaction is for and returns its response. The caller
+// Finds the command, component or modal an interaction is for and returns its response. The caller
 // (server/app.ts) has already checked Discord's signature, sends the response, and then runs any
 // deferred work (see deferred.ts).
 
+/** A private error reply. Errors often repeat what the user typed, so it never pings anyone. */
 const errorResponse = (content: string): APIInteractionResponse => ({
   type: InteractionResponseType.ChannelMessageWithSource,
-  data: { content, flags: MessageFlags.Ephemeral },
+  data: { content, flags: MessageFlags.Ephemeral, allowed_mentions: { parse: [] } },
 });
 
 /**
@@ -83,6 +85,17 @@ export async function handleInteraction(interaction: APIInteraction): Promise<AP
       return errorResponse("This button or menu no longer works.");
     }
     return run(`component "${id}"`, () => component.execute(interaction, args));
+  }
+
+  // Submitted modals (pop-up forms), routed by their custom_id like components
+  if (interaction.type === InteractionType.ModalSubmit) {
+    const { id, args } = parseCustomId(interaction.data.custom_id);
+    const modal = modals.get(id);
+    if (!modal) {
+      console.warn(`[interactions] Unknown modal: ${interaction.data.custom_id}`);
+      return errorResponse("This form no longer works. Please start again.");
+    }
+    return run(`modal "${id}"`, () => modal.execute(interaction, args));
   }
 
   return null;

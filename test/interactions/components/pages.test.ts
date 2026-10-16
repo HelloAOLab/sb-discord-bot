@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pagedOptions, pageFromValue } from "../../../src/interactions/components/pages.js";
+import { pagedOptions, pageFromValue, pageOfItem } from "../../../src/interactions/components/pages.js";
 
 const numbers = (count: number) => Array.from({ length: count }, (_, i) => i + 1);
 const page = (count: number, index: number) =>
@@ -58,5 +58,19 @@ describe("pageFromValue", () => {
     expect(pageFromValue("JHN")).toBeUndefined();
     expect(pageFromValue("3")).toBeUndefined();
     expect(pageFromValue("page:x")).toBeUndefined();
+  });
+});
+
+describe("pageOfItem", () => {
+  const items = Array.from({ length: 66 }, (_, i) => i);
+  const shown = (page: number) => pagedOptions(items, page, (n) => ({ label: String(n), value: String(n) })).options.map((o) => o.value);
+
+  it("finds the page that shows each item, matching pagedOptions", () => {
+    for (const item of items) expect(shown(pageOfItem(items.length, item))).toContain(String(item));
+  });
+
+  it("is the first page for a short list, or an item not in the list", () => {
+    expect(pageOfItem(10, 9)).toBe(0);
+    expect(pageOfItem(66, -1)).toBe(0);
   });
 });

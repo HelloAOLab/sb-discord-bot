@@ -83,6 +83,7 @@ This project requires **pnpm v10+**. Do not use npm or yarn.
 
 ```sh
 pnpm dev                 # run the Worker locally (wrangler dev, http://localhost:8787), with a local D1 copy
+pnpm dev:bot             # run your dev bot on local code: dev server + tunnel + endpoint URL + commands (see Local Development)
 pnpm typecheck           # type-check without emitting — run after every change
 pnpm test                # run the Vitest suite once
 pnpm test:watch          # re-run tests on change
@@ -106,10 +107,10 @@ There is no linter configured. Verify changes with `pnpm test` and `pnpm typeche
 ## Architecture
 
 ```
-wrangler.jsonc                 # Worker config: entry point, D1 binding (DB → database "db1"), GATEWAY Durable Object, cron
+wrangler.jsonc                 # Worker config: entry point, D1 binding (DB → database "db1"), GATEWAY Durable Object, cron (every minute)
 migrations/                    # D1 schema, applied with pnpm db:migrate:local / db:migrate:remote
 src/
-  worker.ts                    # Cloudflare Workers entry: the Hono app (fetch), the cron (scheduled), the Gateway class
+  worker.ts                    # Cloudflare Workers entry: the Hono app (fetch), the cron (scheduled: sessions, Gateway wake), the Gateway class
   gateway/
     client.ts                  # GatewayClient: Discord's Gateway protocol (identify, heartbeat, resume, reconnect)
     durable-object.ts          # Gateway Durable Object: holds the client, runs it on its alarm
@@ -118,41 +119,63 @@ src/
     messages.ts                # replyToReferences(): a new message → replies to its Bible references
     passages.ts                # passageReplies(): one components reply per passage (a box: text cut to fit, Seed Bible button)
   interactions/
-    router.ts                  # handleInteraction(): find the command or component → return its response
+    router.ts                  # handleInteraction(): find the command, component or modal → return its response
     deferred.ts                # deferReply() / deferUpdate(): answer now, edit the message when slow work finishes
     open-link.ts               # resolveOpenLink() / openMessage(): the "Open John 3 in Seed Bible" link
-    permissions.ts             # hasPermission(): check the user's server permissions in code
+    permissions.ts             # hasPermission(): the user's server permissions; appCanPost(): can the bot post here
+    user.ts                    # interactionUserId(): who clicked or typed, in a server or a DM
+    autocomplete.ts            # translationChoices() / uiLanguageChoices() / timeZoneChoices(): shared suggestions
     commands/
       types.ts                 # `Command` interface: { data, execute, autocomplete? }
       index.ts                 # `commandList` — every command must be registered here
       open.ts                  # /open [translation] [lang]: shows the open-picker component
       setseedbiblelinks.ts     # /setseedbiblelinks [on|off]: per-server switch for Seed Bible links (Manage Server)
       setinlineverses.ts       # /setinlineverses [on|off]: per-server switch for inline verses (Manage Server)
+      launchsession.ts         # /launchsession: opens the session-builder form
+      preferences.ts           # /preferences [translation] [lang] [timezone] [reset]: the user's own preferences
     components/                # buttons and select menus
       types.ts                 # `Component` interface: { id, execute(interaction, args) }
       index.ts                 # `componentList` — every component must be registered here
       custom-id.ts             # customId() / parseCustomId(): "<id>:<arg>:<arg>" encoding
       open-picker.ts           # /open's private picker: book → chapter (paged with "Next →"), then posts the link
       pages.ts                 # pagedOptions(): split long lists into menu pages with "← Previous" / "Next →"
+      session-time.ts          # the private time picker for a scheduled session: day, hour, minute, time zone
+      session.ts               # a session's Join / Leave / Cancel session / Get my link buttons
+    modals/                    # pop-up forms
+      types.ts                 # `Modal` interface: { id, execute(interaction, args) }
+      index.ts                 # `modalList` — every modal must be registered here
+      fields.ts                # modalFields() / textField() / choiceField(): read what was submitted
+      session-builder.ts       # /launchsession's form: passage, title, start now or later, reminder
+  sessions/
+    time.ts                    # clock time in a time zone ↔ Unix seconds; the picker's time zone list
+    messages.ts                # the announcement, reminder, start message and private "Get my link" reply
+    scheduler.ts               # runDueSessions(): the cron's job, posting due reminders and start messages
   bible/
     api.ts                     # shared Free Use Bible API client
     translations.ts            # findTranslation() / searchTranslations(): user text → exact translation ID
     books.ts                   # loadBooks() / findBook(): a translation's books, looked up by USFM code
     references.ts              # findPassages(): Bible references in chat text (openbibleinfo parser) → book + chapter/verse segments
   seedbible/
-    links.ts                   # seedBibleUrl(): builds seedbible.org links (always adds source=discord_bot)
+    links.ts                   # seedBibleUrl() / seedBibleChapterUrl() / seedBibleSessionUrl(): seedbible.org links (always source=discord_bot)
     ui-languages.ts            # the 77 interface languages seedbible.org supports (`lang` URL parameter)
   storage/
     database.ts                # useDatabase() / database(): the D1 database for the current request
     guild-settings.ts          # per-server settings (seedBibleLinksEnabled / setSeedBibleLinksEnabled)
+    user-settings.ts           # per-user preferences (translation, lang, time zone)
+    sessions.ts                # reading sessions and who joined them
   utils/
     config.ts                  # `Env` (the Worker's secrets and bindings) and parseEnv(), which validates it with zod
     errors.ts                  # UserFacingError: an error whose message is shown to the user privately
     text.ts                    # truncate() for Discord's label limits
+    discord.ts                 # createMessage(): post a message as the bot (needs DISCORD_TOKEN)
   server/
     app.ts                     # Hono app: POST /interactions (signature check → router → waitUntil), GET /health
   scripts/
     deploy-commands.ts         # PUTs `commandList` definitions to Discord's REST API (runs in Node, reads .env)
+    dev-bot.ts                 # `pnpm dev:bot`: wrangler dev + cloudflared tunnel, then points the dev app at it
+    discord-app.ts             # registerCommands() / setInteractionsEndpoint(): Discord REST calls the scripts share
+    tunnel.ts                  # findTunnelUrl() / isDevEndpoint(): helpers for dev-bot.ts
+    install.ts                 # the bot's install scopes and permissions (BOT_PERMISSIONS, with reasons), invite link
 ```
 
 ### Adding a slash command
@@ -178,11 +201,21 @@ Components are the interactive parts of a message. A command (or another compone
 
 Every menu holds at most **25 options**, and a message holds at most **5 rows** of components. When there are more choices than that (66 books, 150 psalms), page them with `pagedOptions()` from `components/pages.ts`: the last option is "Next →" and later pages start with "← Previous". Choosing one sends a value like `page:2` (read it with `pageFromValue()`), so carry the current page in the custom_id and redraw the menu at the new page.
 
-Buttons on old messages keep working after a deploy only if their `id` and arg format stay the same, so treat a component's `id` as permanent once released. Modals (pop-up forms) are a separate interaction type and aren't routed yet.
+Buttons on old messages keep working after a deploy only if their `id` and arg format stay the same, so treat a component's `id` as permanent once released.
+
+### Adding a modal (pop-up form)
+
+A command or component opens a modal by returning `{ type: InteractionResponseType.Modal, data }`. When the user submits it, Discord POSTs a separate interaction, routed like a component by the part of its `custom_id` before the first `:`.
+
+1. Create `src/interactions/modals/<name>.ts` exporting a `Modal` with a unique `id`, plus a function that builds the response opening it (see `session-builder.ts`). Wrap each field in a **Label** component (`ComponentType.Label`): text inputs, select menus, radio groups and checkboxes all go inside one. A modal holds at most 5.
+2. Read the submission with `modalFields(interaction)`, then `textField()` (trimmed, `undefined` when blank) and `choiceField()` (a radio group or single-choice menu).
+3. Add it to `modalList` in `src/interactions/modals/index.ts`.
+
+Modals have no date or time input; the session time picker uses menus in a message instead.
 
 ## Per-server settings and storage
 
-Per-server settings live in the **D1 database** bound as `DB` in `wrangler.jsonc` (database `db1`). It's the app's only persistent state. `server/app.ts` passes the binding to `useDatabase()` on each request; code reads it with `database()`, using D1's API (`prepare(sql).bind(...).first() / .all() / .run()`, all async). Add a setting as a pair of functions in `storage/guild-settings.ts`; the `guild_settings` table stores one row per server and setting name, so no schema change is needed.
+Per-server settings, per-user preferences and reading sessions live in the **D1 database** bound as `DB` in `wrangler.jsonc` (database `db1`). It's the app's only persistent state. `server/app.ts` passes the binding to `useDatabase()` on each request; code reads it with `database()`, using D1's API (`prepare(sql).bind(...).first() / .all() / .run()`, all async). Add a setting as a pair of functions in `storage/guild-settings.ts`; the `guild_settings` table stores one row per server and setting name, so no schema change is needed. Per-user preferences (`/preferences`) work the same way in `storage/user-settings.ts` (table `user_settings`).
 
 **Schema changes** go in a new numbered file in `migrations/` (never edit an applied one). Apply it with `pnpm db:migrate:local` for `pnpm dev`, and with `pnpm db:migrate:remote` **before** deploying code that relies on it. Tests build their database from the same files, so a broken migration fails the tests.
 
@@ -192,20 +225,31 @@ Per-server settings live in the **D1 database** bound as `DB` in `wrangler.jsonc
 
 ## Inline verses and the Gateway connection
 
-When a server turns on `/setinlineverses` (off by default), the bot replies to Bible references in ordinary messages, **one reply per passage** ("gen 1 1 and exo 2 3" gets two, at most 3). Each reply is a **Components V2** message (`MessageFlags.IsComponentsV2`: no `content`, only components): a box (Container) with a heading, the text cut short at a line break to fit Discord's 4,000-character limit, and an "Open in Seed Bible →" link button built with `seedBibleChapterUrl()`. The text is `INLINE_TRANSLATION` (AAB, the Accessible Ancients Bible and Seed Bible's own default) until per-user and per-server translation preferences exist.
+When a server turns on `/setinlineverses` (off by default), the bot replies to Bible references in ordinary messages, **one reply per passage** ("gen 1 1 and exo 2 3" gets two, at most 3). Each reply is a **Components V2** message (`MessageFlags.IsComponentsV2`: no `content`, only components): a box (Container) with a heading, the text cut short at a line break to fit Discord's 4,000-character limit, and an "Open in Seed Bible →" link button built with `seedBibleChapterUrl()`. The text is `INLINE_TRANSLATION` (AAB, the Accessible Ancients Bible and Seed Bible's own default). Per-user preferences exist now (`/preferences`), but inline replies don't use them yet: the whole channel reads a reply, not just its author.
 
 `findPassages()` uses the [openbibleinfo Bible Passage Reference Parser](https://github.com/openbibleinfo/Bible-Passage-Reference-Parser) (`bible-passage-reference-parser`), so nearly any way of writing a reference works: "genesis 2 3-4", "Jn 3:16; 4:2", "1 Cor 13". The parser also accepts everyday words as books, so two lists in `references.ts` keep chat from triggering replies: `COMMON_WORDS` (abbreviations like "is", "am", "so", "ex" never count, even before a number, unless written with a dot: "it is 5 pm" isn't Isaiah 5, "Ex. 3:14" is Exodus) and `AMBIGUOUS_ALONE` (full names that are common words or first names, like Job, Mark, John, Acts, Numbers, only count with a chapter). Otherwise a book on its own, written in full, means its first chapter ("genesis" → Genesis 1). Code, links and mentions are skipped; a range over many chapters loads at most 3 of them (in parallel).
 
 How messages arrive:
 
 - **One connection for the whole bot.** The `Gateway` Durable Object (named `"main"`) holds it, and connects only while *some* server has inline verses on (`anyInlineVersesEnabled()`). `/setinlineverses` calls `wakeGateway()`, so turning the first server on connects at once and turning the last one off disconnects.
-- **Everything runs on the object's alarm.** `GatewayClient.tick()` sends heartbeats, notices a dead connection, and reconnects with growing delays. Whether any server has inline verses on is read once and cached until the object is woken (`/setinlineverses` and the cron `*/5 * * * *`, `scheduled()` in `worker.ts`, both call `wakeGateway()`), so heartbeats don't query D1.
+- **Everything runs on the object's alarm.** `GatewayClient.tick()` sends heartbeats, notices a dead connection, and reconnects with growing delays. Whether any server has inline verses on is read once and cached until the object is woken (`/setinlineverses` calls `wakeGateway()`, and so does the cron every 5th minute, in `scheduled()` in `worker.ts`), so heartbeats don't query D1.
 - **Restarts resume.** Every deploy restarts the object. The session ID and how far events have been handled are saved in its storage, so the new copy resumes and Discord replays what it missed. Saved progress never passes a message whose reply is still being sent (so a restart can't lose it), and the last 50 messages answered are remembered (so a replayed one isn't answered twice).
 - **Misconfiguration backs off.** A close that retrying won't fix (wrong token, Message Content intent not enabled) is logged with the fix, and the next try is 15 minutes later, even if inline verses are turned off and on in between. Discord allows only 1,000 new sessions a day per bot.
 - **Replies are posted as the bot** (`POST /channels/{id}/messages` with `DISCORD_TOKEN`), not through an interaction. So the bot must be a member of the server (`bot` scope) with View Channels, Send Messages and Read Message History.
 - **More than ~2,500 servers** would need sharding (several connections). The client doesn't support that yet; Discord closes with 4011 if it's needed.
 
 Testing: `GatewayClient` takes its socket, storage, clock and handlers as options, so `test/gateway/client.test.ts` drives the protocol with `FakeSocket` / `FakeStorage` from `test/helpers/gateway.ts`. Test message handling by calling `replyToReferences(gatewayMessage("John 3:16"), token)` with `mockFetch()`.
+
+## Reading sessions (`/launchsession`)
+
+A reading session is one chapter that people open together in Seed Bible. Everyone's link carries the same `sessionId`, plus their own interface language and translation: `https://seedbible.org/en/AAB/genesis/5?sessionId=session-<uuid>&source=discord_bot` (`seedBibleSessionUrl()`). The bot makes up the session ID itself (`session-` + the session's UUID); it doesn't ask seedbible.org to create the session first.
+
+1. `/launchsession` opens a form (`modals/session-builder.ts`): passage (read with `findPassages()`, using its first chapter), title, "Start now" or "Schedule for later", and a reminder.
+2. **Start now** posts the public announcement with a **Get my link** button.
+3. **Schedule for later** saves a `draft` session and shows a private **time picker** (`components/session-time.ts`). Discord has no date or time input, so it's four menus: day (the next 25), hour, minute (5-minute steps) and time zone. Its preview is a Discord timestamp (`<t:…:F>`), which each viewer sees in their own time zone, so a wrong zone shows up as a wrong time. **Schedule** posts the public announcement (Join / Leave / Cancel session, and who's going), adds the planner, and saves their time zone to their preferences.
+4. The **cron** (every minute, `sessions/scheduler.ts`) posts the reminder and then the start message as the bot, pinging only the people who joined (`allowed_mentions.users`, at most 60). The start message has **Get my link**, which replies privately with that person's link (from `/preferences`, else their Discord language and AAB). Join on an announcement after the start does the same. The buttons count a session as started once its start time has passed, without waiting for the cron to mark it.
+
+Times are Unix seconds, so they go straight into Discord timestamps. The picker saves the clock time and time zone chosen; `sessions/time.ts` converts them, handling daylight saving. Scheduled sessions need the bot in the server with permission to post in the channel: the form checks `appCanPost()`, and the cron logs (and doesn't retry) a message Discord rejects. A session is marked as reminded or started *before* its message is posted, so nothing is posted twice. If the announcement can't be posted, the booking is undone (`unscheduleSession()`), so Schedule can be clicked again. Time pickers left open for a day are deleted, and sessions 30 days after they started or were cancelled, with who joined them. Only the planner, or someone with **Manage Events**, can cancel.
 
 ## seedbible.org links
 
@@ -237,12 +281,13 @@ There are two separate sets of settings, because two things run in different pla
 | `DISCORD_PUBLIC_KEY` | Deployed Worker: `pnpm wrangler secret put DISCORD_PUBLIC_KEY`; `pnpm dev`: `.env` | General Information → Public Key | Verifying incoming request signatures |
 | `DB`                 | Worker binding in `wrangler.jsonc` | — | The D1 database |
 | `GATEWAY`            | Worker binding in `wrangler.jsonc` | — | The Gateway Durable Object (inline verses) |
-| `DISCORD_TOKEN`      | Deployed Worker: `pnpm wrangler secret put DISCORD_TOKEN`; your machine: `.env` | Bot → Token | The Gateway connection and its replies (inline verses); `pnpm deploy-commands` (REST auth). Optional for the Worker: without it, everything but inline verses works |
+| `DISCORD_TOKEN`      | Deployed Worker: `pnpm wrangler secret put DISCORD_TOKEN`; your machine: `.env` | Bot → Token | Messages the bot posts by itself: inline verses (and their Gateway connection), session reminders and start messages; `pnpm deploy-commands` (REST auth). Optional for the Worker: without it, everything else works |
 | `DISCORD_CLIENT_ID`  | `.env` (your machine only) | General Information → Application ID | `pnpm deploy-commands` |
+| `DISCORD_DEV_GUILD_ID` | `.env.dev` only, optional | Your dev server's ID (Discord → Developer Mode → right-click the server → Copy Server ID) | `pnpm dev:bot` registers commands in that server only, so they appear at once |
 
-All local values live in one git-ignored `.env` file (`.env.example` lists them). `wrangler dev` loads it into the local Worker's `env` — but only when no `.dev.vars` file exists, so don't create one. The deployed Worker never reads `.env`; it gets `DISCORD_PUBLIC_KEY` and `DISCORD_TOKEN` from Cloudflare secrets. Only the Gateway Durable Object uses the bot token; interactions never need it.
+Local values live in the git-ignored `.env` file (`.env.example` lists them). The dev bot has its own git-ignored **`.env.dev`** (`.env.dev.example`), with the same names plus `DISCORD_DEV_GUILD_ID`; only `pnpm dev:bot` uses it. `wrangler dev` loads it into the local Worker's `env` — but only when no `.dev.vars` file exists, so don't create one. The deployed Worker never reads `.env`; it gets `DISCORD_PUBLIC_KEY` and `DISCORD_TOKEN` from Cloudflare secrets. Only the Gateway Durable Object and the cron (session reminders) use the bot token; interactions never need it.
 
-For local development, use a **separate Discord application** (its own values in `.env`, invited only to a test server). If the local Worker and the deployed one share a bot, both receive every message and reply twice.
+For local development, use a **separate Discord application**, the dev bot (its own values in `.env.dev`, invited only to a dev server). If the local Worker and the deployed one share a bot, both receive every message and reply twice.
 
 The Worker's variables are declared and validated in `src/utils/config.ts` (`Env`, `parseEnv()`); when adding one, update it, `.env.example`, and this table, and set it on Cloudflare with `pnpm wrangler secret put`.
 
@@ -251,6 +296,8 @@ Never print, log, or commit `.env` values.
 ## Local Development
 
 `pnpm dev` runs the Worker at `http://localhost:8787` in Wrangler's local runtime, with a local copy of D1 (in `.wrangler/`, set up with `pnpm db:migrate:local`), the Gateway Durable Object, and the secrets from `.env`. The Gateway connection is outgoing, so inline verses work locally without a tunnel once a test server runs `/setinlineverses state: on`. Discord can't reach `localhost`, so to try it from Discord either expose it with a tunnel (`cloudflared tunnel --url http://localhost:8787`) or deploy, then set **Interactions Endpoint URL** in the Developer Portal to `https://<url>/interactions`. The Worker must be running when you save, since Discord sends a verification request.
+
+**`pnpm dev:bot` does all of that in one command** (`src/scripts/dev-bot.ts`), for the dev bot in `.env.dev`: sets its install settings (Installation → Guild Install: the `bot` and `applications.commands` scopes and the permissions in `src/scripts/install.ts`), applies local migrations, starts `wrangler dev --env-file .env.dev` (so the local Worker gets only the dev bot's values, never `.env`'s), opens a Cloudflare quick tunnel (a new random `https://….trycloudflare.com` address each run, no account needed), sets the dev application's Interactions Endpoint URL through Discord's API (`PATCH /applications/@me`), and registers the commands. With `DISCORD_DEV_GUILD_ID` set, commands go to that server only and appear at once; without it they're global and can take an hour. It keeps running with the Worker's logs until Ctrl+C, and prints an invite link: open it to add the dev bot to a server, or again to give it new permissions where it already is (changing the install settings doesn't update servers it's already in). When the bot starts using a new permission, add it to `BOT_PERMISSIONS`. It needs `cloudflared` (`winget install --id Cloudflare.cloudflared`). As safeguards it refuses to run if `.env.dev` names the same application as `.env`, or if the application's current endpoint isn't a tunnel address (it would be the deployed bot's) unless given `--force` (`pnpm dev:bot --force`). `wrangler dev` doesn't run the cron by itself, so `pnpm dev:bot` triggers it every minute (`GET /cdn-cgi/local/scheduled`), like Cloudflare does; under plain `pnpm dev`, run `curl "http://127.0.0.1:8787/cdn-cgi/local/scheduled"` by hand.
 
 The dev machine runs Windows. In scripts (`src/scripts/`), avoid calling `process.exit()` while sockets are still closing; it can crash Node with a libuv assertion. Set `process.exitCode` and let the process exit on its own.
 

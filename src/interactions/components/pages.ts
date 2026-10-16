@@ -47,6 +47,14 @@ export function pagedOptions<T>(items: T[], page: number, toOption: (item: T) =>
   return { options, page: current, pageCount: starts.length };
 }
 
+/** The page of a list of `total` items that shows the item at `index` (0 for an index not in the list). */
+export function pageOfItem(total: number, index: number): number {
+  const starts = pageStarts(total);
+  let page = 0;
+  while (page + 1 < starts.length && starts[page + 1]! <= index) page++;
+  return page;
+}
+
 /** The page number if `value` is a "← Previous" / "Next →" choice, otherwise undefined. */
 export function pageFromValue(value: string): number | undefined {
   const match = PAGE_VALUE.exec(value);

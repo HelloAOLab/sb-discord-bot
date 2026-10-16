@@ -20,8 +20,9 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Gateway"] }],
 
-  // Wakes the Gateway object every 5 minutes in case its own alarm stopped (src/worker.ts).
-  "triggers": { "crons": ["*/5 * * * *"] },
+  // Every minute: posts reading sessions' reminders and start messages, and every 5 minutes wakes
+  // the Gateway object in case its own alarm stopped (scheduled() in src/worker.ts).
+  "triggers": { "crons": ["* * * * *"] },
 
   // Logs (console.log/warn/error) appear in the dashboard and in `wrangler tail`.
   "observability": { "enabled": true }

@@ -13,8 +13,9 @@ export interface Env {
   /** The D1 database (binding "DB" in wrangler.jsonc). */
   DB: SqlDatabase;
   /**
-   * Discord Developer Portal → Bot → Token. Only the Gateway connection (inline verses) uses it, to
-   * read messages and reply; interactions don't. Without it, everything but inline verses works.
+   * Discord Developer Portal → Bot → Token. Used for what the bot does by itself: the Gateway
+   * connection (inline verses) and the cron's session reminders and start messages. Interactions
+   * don't need it. Without it, everything else works.
    */
   DISCORD_TOKEN?: string;
   /** The Gateway Durable Object (binding "GATEWAY" in wrangler.jsonc). */

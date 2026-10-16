@@ -27,7 +27,9 @@ test/
   helpers/
     keys.ts                    # test key pair + signRequest()
     interactions.ts            # chatInputInteraction(), buttonInteraction(), selectInteraction(),
-                               #   autocompleteInteraction(), withPermissions(), opt.* option builders
+                               #   autocompleteInteraction(), modalSubmitInteraction(), field.* (modal
+                               #   fields), withPermissions(), withAppPermissions(), opt.* option builders
+    sessions.ts                # saveSession(): a reading session in the test database; NOW, a fixed time
     server.ts                  # postInteraction(), request(), testEnv(): call the Hono app like Cloudflare does
     database.ts                # createTestDatabase(): D1 stand-in built from migrations/
     bible-api.ts               # mockFetch(): fake Bible API (all 66 books) + records Discord webhook calls
@@ -114,6 +116,14 @@ What to cover for a component:
 5. **The command that sends it**: the command's test should assert the component is attached to its reply.
 
 Use `selectInteraction(customId, values)` for a select-menu choice.
+
+## Modals (pop-up forms)
+
+Test a modal like a component: call `modal.execute(interaction, args)` with `modalSubmitInteraction(customId, [field.text("passage", "John 3"), field.radio("when", "now")])`, which wraps each field in a Label as Discord does. The command that opens it should assert `type: InteractionResponseType.Modal` and that `modals.get(data.custom_id)` finds the handler.
+
+## Time
+
+Code that reads the clock uses `Date.now()`. Pin it with `vi.useFakeTimers({ toFake: ["Date"] })` and `vi.setSystemTime(...)` (only `Date`, so `setTimeout` in deferred replies still runs), and call `vi.useRealTimers()` in `afterEach`. Functions that take `now` (`runDueSessions(token, now)`, `timePickerMessage(session, { now })`) are simpler: pass it.
 
 ## External calls (Bible API, Discord webhooks)
 
