@@ -108,6 +108,22 @@ describe("deferred replies", () => {
     }
   });
 
+  it("retries a follow-up once too, which can also arrive before Discord knows the interaction", async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: ++attempts === 1 ? 404 : 204 }));
+
+      const sent = sendFollowUp(interaction, { content: "hi" });
+      await vi.advanceTimersByTimeAsync(1000);
+      await sent;
+
+      expect(attempts).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("succeeds when the retried edit goes through", async () => {
     vi.useFakeTimers();
     try {

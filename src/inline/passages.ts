@@ -14,7 +14,8 @@ import type {
 import { bibleApi } from "../bible/api.js";
 import { describePassage, type BiblePassage, type PassageSegment } from "../bible/references.js";
 import { plainLink } from "../interactions/open-link.js";
-import { seedBibleChapterUrl } from "../seedbible/links.js";
+import { SEED_BIBLE_DEFAULT_TRANSLATION, seedBibleChapterUrl } from "../seedbible/links.js";
+import { escapeMarkdown } from "../utils/text.js";
 
 // Builds the replies to the Bible passages found in a message (see inline/messages.ts): one reply
 // per passage, each a message made of components ("Components V2"), not plain text. It's a box
@@ -29,7 +30,7 @@ import { seedBibleChapterUrl } from "../seedbible/links.js";
  * Inline replies use this translation's text (the Accessible Ancients Bible, also Seed Bible's
  * default) until users and servers can choose their own.
  */
-export const INLINE_TRANSLATION = "AAB";
+export const INLINE_TRANSLATION = SEED_BIBLE_DEFAULT_TRANSLATION;
 
 /** Discord's limit on all the text in a components message. */
 const TEXT_LIMIT = 4000;
@@ -202,11 +203,3 @@ function cutToFit(text: string, max: number): string {
 
 /** The whole numbers from `first` to `last`. */
 const range = (first: number, last: number) => Array.from({ length: Math.max(last - first + 1, 0) }, (_, i) => first + i);
-
-/**
- * Stops Bible text from being read as Discord formatting: "*" or "_" turning text italic, or a
- * line of poetry that starts with "#" or ">" becoming a heading or a quote.
- */
-function escapeMarkdown(text: string): string {
-  return text.replace(/[\\*_~`|]/g, "\\$&").replace(/^([#>-])/gm, "\\$1");
-}

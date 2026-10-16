@@ -10,6 +10,8 @@ import {
   type APIChatInputApplicationCommandInteraction,
   type APIInteractionGuildMember,
   type APIMessageComponentInteraction,
+  type APIModalSubmissionComponent,
+  type APIModalSubmitInteraction,
 } from "discord-api-types/v10";
 
 /** The application (bot) ID in test payloads. */
@@ -121,6 +123,47 @@ export function autocompleteInteraction(
     type: InteractionType.ApplicationCommandAutocomplete,
     ...overrides,
   } as APIApplicationCommandAutocompleteInteraction;
+}
+
+/**
+ * Builds the payload Discord POSTs when a user submits a modal (pop-up form). `customId` is the
+ * modal's custom_id; build `fields` with field.text() / field.radio().
+ */
+export function modalSubmitInteraction(
+  customId: string,
+  fields: APIModalSubmissionComponent[],
+  overrides: Partial<APIModalSubmitInteraction> = {},
+): APIModalSubmitInteraction {
+  const base = chatInputInteraction("unused");
+  return {
+    ...base,
+    type: InteractionType.ModalSubmit,
+    channel: { id: base.channel_id!, type: ChannelType.GuildText },
+    data: { custom_id: customId, components: fields },
+    ...overrides,
+  } as APIModalSubmitInteraction;
+}
+
+/** Modal fields as Discord sends them back when the form is submitted: each inside its Label. */
+export const field = {
+  text: (custom_id: string, value: string): APIModalSubmissionComponent => ({
+    type: ComponentType.Label,
+    component: { type: ComponentType.TextInput, custom_id, value },
+  }),
+  /** A radio group; `null` when nothing is chosen. */
+  radio: (custom_id: string, value: string | null): APIModalSubmissionComponent => ({
+    type: ComponentType.Label,
+    component: { type: ComponentType.RadioGroup, custom_id, value },
+  }),
+};
+
+/**
+ * Returns a copy of an interaction whose app (the bot) has exactly these permissions in the
+ * channel, e.g. withAppPermissions(i, PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages).
+ * By default the helpers' app has none ("0").
+ */
+export function withAppPermissions<T extends { app_permissions: string }>(interaction: T, permissions: bigint): T {
+  return { ...interaction, app_permissions: permissions.toString() };
 }
 
 /**

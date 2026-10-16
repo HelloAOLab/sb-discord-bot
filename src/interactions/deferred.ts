@@ -138,8 +138,9 @@ async function discordWebhookRequest(
 
   let response = await send();
   // The work can finish before Discord has registered our deferred response (cached data makes it
-  // nearly instant), and Discord then doesn't know the original message yet. Try once more.
-  if (response.status === 404 && messageId) {
+  // nearly instant), and Discord then doesn't know the original message, or the interaction's
+  // webhook for follow-ups, yet. Try once more.
+  if (response.status === 404) {
     await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
     response = await send();
   }

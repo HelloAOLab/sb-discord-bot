@@ -1,12 +1,7 @@
-import {
-  MessageType,
-  RouteBases,
-  Routes,
-  type GatewayMessageCreateDispatchData,
-  type RESTPostAPIChannelMessageJSONBody,
-} from "discord-api-types/v10";
+import { MessageType, type GatewayMessageCreateDispatchData } from "discord-api-types/v10";
 import { findPassages } from "../bible/references.js";
 import { inlineReplySettings } from "../storage/guild-settings.js";
+import { createMessage } from "../utils/discord.js";
 import { passageReplies } from "./passages.js";
 
 // Inline verses: when someone writes a Bible reference in a server that turned them on
@@ -45,16 +40,4 @@ export async function replyToReferences(message: GatewayMessageCreateDispatchDat
     }
   }
   return replied;
-}
-
-/** Posts a message as the bot. Unlike interaction replies, this needs the bot token. */
-async function createMessage(token: string, channelId: string, body: RESTPostAPIChannelMessageJSONBody): Promise<void> {
-  const response = await fetch(`${RouteBases.api}${Routes.channelMessages(channelId)}`, {
-    method: "POST",
-    headers: { Authorization: `Bot ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    throw new Error(`Discord POST /channels/${channelId}/messages failed: ${response.status} ${await response.text()}`);
-  }
 }

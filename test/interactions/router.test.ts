@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { InteractionResponseType, InteractionType, MessageFlags, PermissionFlagsBits } from "discord-api-types/v10";
+import { ApplicationCommandType, InteractionResponseType, InteractionType, MessageFlags, PermissionFlagsBits } from "discord-api-types/v10";
 import { commands } from "../../src/interactions/commands/index.js";
 import { components } from "../../src/interactions/components/index.js";
 import { UserFacingError } from "../../src/utils/errors.js";
@@ -8,6 +8,8 @@ import {
   autocompleteInteraction,
   buttonInteraction,
   chatInputInteraction,
+  field,
+  modalSubmitInteraction,
   opt,
   selectInteraction,
   withPermissions,
@@ -76,15 +78,16 @@ describe("POST /interactions", () => {
       expect(res.body.data.content).toMatch(/went wrong/);
     });
 
-    it("shows a UserFacingError's own message privately, without logging it", async () => {
+    it("shows a UserFacingError's own message privately, without logging it or letting it ping anyone", async () => {
       const log = vi.spyOn(console, "error").mockImplementation(() => {});
-      vi.spyOn(commands.get("setseedbiblelinks")!, "execute").mockRejectedValueOnce(new UserFacingError('Try "John 3".'));
+      // Errors often repeat what the user typed.
+      vi.spyOn(commands.get("setseedbiblelinks")!, "execute").mockRejectedValueOnce(new UserFacingError('No translation called "@everyone".'));
 
       const res = await postInteraction(chatInputInteraction("setseedbiblelinks"));
 
       expect(res.body).toEqual({
         type: InteractionResponseType.ChannelMessageWithSource,
-        data: { content: 'Try "John 3".', flags: MessageFlags.Ephemeral },
+        data: { content: 'No translation called "@everyone".', flags: MessageFlags.Ephemeral, allowed_mentions: { parse: [] } },
       });
       expect(log).not.toHaveBeenCalled();
     });
@@ -125,7 +128,9 @@ describe("POST /interactions", () => {
     });
 
     it("rejects interaction types it doesn't handle", async () => {
-      const res = await postInteraction({ ...chatInputInteraction("open"), type: InteractionType.ModalSubmit });
+      // A right-click "user" command: the app only has slash commands.
+      const command = chatInputInteraction("open");
+      const res = await postInteraction({ ...command, data: { ...command.data, type: ApplicationCommandType.User } });
       expect(res.status).toBe(400);
     });
   });
@@ -160,6 +165,41 @@ describe("POST /interactions", () => {
       expect(res.status).toBe(200);
       expect(res.body.data.flags).toBe(MessageFlags.Ephemeral);
       expect(res.body.data.content).toMatch(/went wrong/);
+    });
+  });
+
+  describe("modal routing", () => {
+    it("routes a submitted form to the modal named at the start of its custom_id", async () => {
+      const { discordCalls } = mockFetch();
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const form = modalSubmitInteraction("session-builder", [
+        field.text("passage", "John 3"),
+        field.text("title", ""),
+        field.radio("when", "now"),
+        field.radio("reminder", null),
+      ]);
+
+      const res = await postInteraction(form);
+
+      expect(res.body).toEqual({ type: InteractionResponseType.DeferredChannelMessageWithSource });
+      await res.background;
+      expect(discordCalls[0]).toMatchObject({ method: "PATCH", body: { content: expect.stringContaining("Reading **John 3** together") } });
+    });
+
+    it("replies privately for an unknown modal", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const res = await postInteraction(modalSubmitInteraction("removed-form", []));
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.flags).toBe(MessageFlags.Ephemeral);
+      expect(res.body.data.content).toMatch(/This form no longer works/);
+    });
+
+    it("shows a UserFacingError from a modal privately", async () => {
+      const res = await postInteraction(modalSubmitInteraction("session-builder", [field.text("passage", "nonsense")]));
+
+      expect(res.body.data.flags).toBe(MessageFlags.Ephemeral);
+      expect(res.body.data.content).toMatch(/couldn't find a Bible chapter in "nonsense"/);
     });
   });
 

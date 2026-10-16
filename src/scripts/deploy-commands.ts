@@ -1,6 +1,5 @@
-import { RouteBases, Routes } from "discord-api-types/v10";
 import { z } from "zod";
-import { commandList } from "../interactions/commands/index.js";
+import { registerCommands } from "./discord-app.js";
 
 // Registers every command in `commandList` with Discord. Runs on your machine with Node
 // (`pnpm deploy-commands`), not on Cloudflare, so it reads DISCORD_TOKEN and DISCORD_CLIENT_ID
@@ -23,22 +22,12 @@ if (!env.success) {
   for (const issue of env.error.issues) console.error(`  - ${issue.message}`);
   process.exitCode = 1;
 } else {
-  const body = commandList.map((command) => command.data);
-  console.log(`Registering ${body.length} command(s)...`);
-
-  const res = await fetch(RouteBases.api + Routes.applicationCommands(env.data.DISCORD_CLIENT_ID), {
-    method: "PUT",
-    headers: {
-      Authorization: `Bot ${env.data.DISCORD_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    console.error(`Failed (${res.status}):`, await res.text());
+  console.log("Registering commands...");
+  try {
+    const count = await registerCommands(env.data.DISCORD_TOKEN, env.data.DISCORD_CLIENT_ID);
+    console.log(`Done: ${count} command(s).`);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;
-  } else {
-    console.log("Done.");
   }
 }

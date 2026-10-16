@@ -8,6 +8,7 @@
     "build": "wrangler deploy --dry-run --outdir dist",
     "typecheck": "tsc --noEmit",
     "deploy-commands": "tsx src/scripts/deploy-commands.ts",
+    "dev:bot": "tsx src/scripts/dev-bot.ts",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
     "test": "vitest run",
